@@ -56,13 +56,22 @@ Agent
 
 ## 阶段 2：DecisionService
 
-目标：定义与具体决策模型无关的 DSH 能力接口，并由 Jev provider 实现。
+目标：定义与具体决策模型无关的核心接口，并由 Jev provider 实现。
 
 范围：
 
-- Service Definition、Jev Service Provider、Consumer 示例组成完整能力接缝。
+- 提供 provider 注册、显式解析、执行、取消传播、统一结果和结构化错误。
+- Jev Service Provider 把通用 Boolean、Choice、Score 映射到 Jev 协议。
 - 定义请求、结果、取消、错误和可观测性接口。
-- API key 通过 DSH Credentials 在每次操作时解析，不写入配置或 Session。
+- API key 通过 resolver 在每次操作时解析，不由 Service 或 Provider 缓存。
+- Provider 失败不触发隐式 fallback；Consumer 拥有恢复策略。
+
+验收条件：
+
+- Service 不依赖 Jev 私有类型或错误。
+- Mock Provider 可独立测试注册、选择、注销、取消和失败路径。
+- Jev Provider 每次调用重新解析凭证，并返回 provider、model、延迟和 token usage。
+- 阶段 3 将 Service 注册到 Cordis，并把凭证 resolver 接到 DSH Credentials，完成 DSH 能力接缝。
 
 ## 阶段 3：DSH 工具与插件包
 
@@ -139,7 +148,7 @@ DSH 自带的 bundle/row 开关负责装载与停用；配置页不再增加含�
 
 - [x] 阶段 0：项目骨架
 - [x] 阶段 1：Jev Wire Client
-- [ ] 阶段 2：DecisionService
+- [x] 阶段 2：DecisionService
 - [ ] 阶段 3：DSH 工具与插件包
 - [ ] 阶段 4：插件配置页
 - [ ] 阶段 5：Shadow Router
