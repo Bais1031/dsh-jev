@@ -24,7 +24,7 @@ export interface JevDecisionToolService {
 
 /** Tool construction options that affect user recovery guidance. */
 export interface JevDecisionToolOptions {
-  readonly apiKeyRef: string
+  readonly apiKeyRef: string | (() => string)
 }
 
 /**
@@ -88,7 +88,8 @@ export function createJevDecisionTool(
         return decisionResultValue(result)
       } catch (error: unknown) {
         if (!(error instanceof DecisionError)) throw error
-        throw new Error(toolErrorMessage(error, options.apiKeyRef), { cause: error })
+        const apiKeyRef = typeof options.apiKeyRef === 'function' ? options.apiKeyRef() : options.apiKeyRef
+        throw new Error(toolErrorMessage(error, apiKeyRef), { cause: error })
       }
     },
   })

@@ -21,7 +21,8 @@ export type JevApiKeyResolver = (signal?: AbortSignal) => Promise<string | undef
 
 /** Construction options for the Jev decision provider. */
 export interface JevDecisionProviderOptions {
-  readonly client: JevClient
+  /** Wire client, or a factory read once per decision when live settings select its options. */
+  readonly client: JevClient | (() => JevClient)
   readonly resolveApiKey: JevApiKeyResolver
   readonly name?: DecisionProviderName
 }
@@ -29,7 +30,7 @@ export interface JevDecisionProviderOptions {
 /** Decision provider that maps the generic API to TypeSafe Jev. */
 export class JevDecisionProvider implements DecisionProvider {
   readonly name: DecisionProviderName
-  readonly #client: JevClient
+  readonly #client: () => JevClient
   readonly #resolveApiKey: JevApiKeyResolver
 
   /**
@@ -38,7 +39,8 @@ export class JevDecisionProvider implements DecisionProvider {
    */
   constructor(options: JevDecisionProviderOptions) {
     this.name = options.name ?? JEV_PROVIDER_NAME
-    this.#client = options.client
+    const client = options.client
+    this.#client = typeof client === 'function' ? client : () => client
     this.#resolveApiKey = options.resolveApiKey
   }
 
@@ -58,7 +60,7 @@ export class JevDecisionProvider implements DecisionProvider {
         questions: mapQuestions(request.questions),
         ...request.model === undefined ? {} : { model: request.model },
       }
-      const response = await this.#client.evaluate(jevRequest, {
+      const response = await this.#client().evaluate(jevRequest, {
         apiKey,
         ...options.signal === undefined ? {} : { signal: options.signal },
       })

@@ -29,6 +29,19 @@ const REQUEST: DecisionRequest = {
 }
 
 describe('JevDecisionProvider', () => {
+  it('creates a wire client for each decision so live settings take effect', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response(0.08))
+      .mockResolvedValueOnce(response(0.91))
+    const createClient = vi.fn(() => new JevClient({ fetch }))
+    const provider = new JevDecisionProvider({ client: createClient, resolveApiKey: async () => 'key' })
+
+    await provider.decide(REQUEST, {})
+    await provider.decide(REQUEST, {})
+
+    expect(createClient).toHaveBeenCalledTimes(2)
+  })
+
   it('maps generic questions and answers without retaining credentials', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(response(0.08))

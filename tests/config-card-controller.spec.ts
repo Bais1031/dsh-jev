@@ -43,11 +43,13 @@ describe('DshJevConfigCardController', () => {
       const face = controller.inject()
       face.edit('routingMode', 'sometimes')
       face.edit('minimumConfidence', '1.1')
+      face.edit('fastRoute', 'missing-model/')
       expect(face.hooks.dshJevConfigCard.getSnapshot()).toMatchObject({
         dirty: true,
         invalid: true,
         routingMode: { invalid: true },
         minimumConfidence: { invalid: true },
+        fastRoute: { invalid: true },
       })
       face.save()
       expect(scope.mutations).toEqual([])
@@ -78,6 +80,7 @@ describe('DshJevConfigCardController', () => {
       face.edit('routingMode', 'shadow')
       face.edit('minimumConfidence', '0.9')
       face.edit('metricsEnabled', 'false')
+      face.edit('fastRoute', 'deepseek-official/deepseek-chat')
       face.edit('apiKey', 'secret-never-returned')
       face.save()
 
@@ -94,6 +97,7 @@ describe('DshJevConfigCardController', () => {
         { op: 'set', path: ['routingMode'], value: 'shadow' },
         { op: 'set', path: ['minimumConfidence'], value: 0.9 },
         { op: 'set', path: ['metricsEnabled'], value: false },
+        { op: 'set', path: ['fastRoute'], value: { provider: 'deepseek-official', model: 'deepseek-chat' } },
       ]])
     } finally {
       controller.dispose()

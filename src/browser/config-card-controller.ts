@@ -28,6 +28,10 @@ export interface DshJevSettings {
   readonly timeoutMs?: number
   readonly maxInputBytes?: number
   readonly metricsEnabled?: boolean
+  readonly routerMaxInputCharacters?: number
+  readonly fastRoute?: { readonly provider: string; readonly model: string }
+  readonly standardRoute?: { readonly provider: string; readonly model: string }
+  readonly deepRoute?: { readonly provider: string; readonly model: string }
 }
 
 /** Non-secret credential information returned to the page. */
@@ -59,6 +63,10 @@ export interface DshJevConfigCardState extends SettingsFormShell {
   readonly timeoutMs: SettingsFieldState
   readonly maxInputBytes: SettingsFieldState
   readonly metricsEnabled: SettingsFieldState
+  readonly routerMaxInputCharacters: SettingsFieldState
+  readonly fastRoute: SettingsFieldState
+  readonly standardRoute: SettingsFieldState
+  readonly deepRoute: SettingsFieldState
 }
 
 /** Registration-side callbacks and reactive state for the page. */
@@ -115,6 +123,10 @@ export class DshJevConfigCardController {
       timeoutMs: this.form.field('timeoutMs'),
       maxInputBytes: this.form.field('maxInputBytes'),
       metricsEnabled: this.form.field('metricsEnabled'),
+      routerMaxInputCharacters: this.form.field('routerMaxInputCharacters'),
+      fastRoute: this.form.field('fastRoute'),
+      standardRoute: this.form.field('standardRoute'),
+      deepRoute: this.form.field('deepRoute'),
     }
   }
 
@@ -182,6 +194,10 @@ function fieldSpecs(): SettingsFieldSpec[] {
     numberField('minimumMargin', value => value >= 0 && value <= 1),
     numberField('timeoutMs', value => Number.isInteger(value) && value >= 1 && value <= 120_000),
     numberField('maxInputBytes', value => Number.isInteger(value) && value >= 1 && value <= 10_000_000),
+    numberField('routerMaxInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
+    routeField('fastRoute'),
+    routeField('standardRoute'),
+    routeField('deepRoute'),
     {
       field: 'metricsEnabled',
       format: value => typeof value === 'boolean' ? String(value) : '',
@@ -194,6 +210,33 @@ function fieldSpecs(): SettingsFieldSpec[] {
       },
     },
   ]
+}
+
+function routeField(field: string): SettingsFieldSpec {
+  return {
+    field,
+    format: (value) => {
+      if (!isRecord(value) || typeof value.provider !== 'string' || typeof value.model !== 'string') return ''
+      return `${value.provider}/${value.model}`
+    },
+    parse: (text) => {
+      const normalized = text.trim()
+      if (normalized === '') return { kind: 'clear' }
+      const separator = normalized.indexOf('/')
+      if (separator < 1 || separator === normalized.length - 1) return undefined
+      const provider = normalized.slice(0, separator).trim()
+      const model = normalized.slice(separator + 1).trim()
+      if (provider.length === 0 || model.length === 0) return undefined
+      return {
+        kind: 'set',
+        value: { provider, model },
+      }
+    },
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function textField(field: string, accepts: (text: string) => boolean): SettingsFieldSpec {

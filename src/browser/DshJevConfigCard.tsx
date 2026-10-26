@@ -41,12 +41,16 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
       <Field props={props} state={state} field="apiKeyEnv" label="apiKeyRef" hint="apiKeyRefHint" invalid="invalidCredentialRef" disabled={disabled} />
       <Field props={props} state={state} field="model" label="model" hint="modelHint" invalid="invalidText" disabled={disabled} />
       <Field props={props} state={state} field="routingMode" label="routingMode" hint="routingModeHint" invalid="invalidMode" disabled={disabled} />
+      <Field props={props} state={state} field="fastRoute" label="fastRoute" hint="fastRouteHint" invalid="invalidRoute" disabled={disabled} />
+      <Field props={props} state={state} field="standardRoute" label="standardRoute" hint="standardRouteHint" invalid="invalidRoute" disabled={disabled} />
+      <Field props={props} state={state} field="deepRoute" label="deepRoute" hint="deepRouteHint" invalid="invalidRoute" disabled={disabled} />
       <Field props={props} state={state} field="fallbackPolicy" label="fallbackPolicy" hint="fallbackPolicyHint" invalid="invalidFallback" disabled={disabled} />
       <Field props={props} state={state} field="minimumConfidence" label="minimumConfidence" hint="minimumConfidenceHint" invalid="invalidProbability" disabled={disabled} numeric />
       <Field props={props} state={state} field="minimumMargin" label="minimumMargin" hint="minimumMarginHint" invalid="invalidProbability" disabled={disabled} numeric />
       <Field props={props} state={state} field="endpoint" label="endpoint" hint="endpointHint" invalid="invalidEndpoint" disabled={disabled} />
       <Field props={props} state={state} field="timeoutMs" label="timeoutMs" hint="timeoutMsHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="maxInputBytes" label="maxInputBytes" hint="maxInputBytesHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="routerMaxInputCharacters" label="routerMaxInputCharacters" hint="routerMaxInputCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="metricsEnabled" label="metricsEnabled" hint="metricsEnabledHint" invalid="invalidBoolean" disabled={disabled} />
     </SettingsForm>
   )
