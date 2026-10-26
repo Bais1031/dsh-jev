@@ -80,8 +80,10 @@ Agent
 范围：
 
 - 使用 `ctx.tools` 注册工具，使用 `ctx.effect()` 管理生命周期。
+- 发布 `ctx.decisions` Cordis 服务，并在卸载时停止接收、取消并等待已接收操作。
+- API key 通过 `ctx.credentials` 按操作解析，不进入工具参数、结果或普通配置。
 - 增加 `cordis.patch.yml` 和 `dsh.bundle.patch` 包元数据。
-- 增加中英文 locale、README、安装和卸载说明。
+- 增加 README、安装、配置、卸载和市场准备说明。
 - 记录所有进入模型的输入所需的 Session 事件或请求信息。
 
 验收条件：插件可通过 `dsh plugin --profile web add /home/jzl/projects/dsh-jev` 安装；卸载后不残留注册或后台任务。
@@ -127,7 +129,7 @@ DSH 自带的 bundle/row 开关负责装载与停用；配置页不再增加含�
 
 指标：大模型调用减少率、总 token、端到端 P50/P95、错误降级率、升级率、用户覆盖率、Brier/ECE 校准和任务成功率。
 
-发布项：Git 仓库、npm 包、版本标签、兼容范围、隐私说明、升级/卸载说明和示例配置。
+发布项：Git 仓库、npm 包、版本标签、兼容范围、隐私说明、升级/卸载说明和示例配置。发布稳定 npm 版本后向 `awesome-dsh-plugin` 提交条目，由社区目录和 format-1 索引收录；不向 `dsh-market` 应用仓库提交插件条目。
 
 ## 建议提交顺序
 
@@ -149,7 +151,7 @@ DSH 自带的 bundle/row 开关负责装载与停用；配置页不再增加含�
 - [x] 阶段 0：项目骨架
 - [x] 阶段 1：Jev Wire Client
 - [x] 阶段 2：DecisionService
-- [ ] 阶段 3：DSH 工具与插件包
+- [x] 阶段 3：DSH 工具与插件包
 - [ ] 阶段 4：插件配置页
 - [ ] 阶段 5：Shadow Router
 - [ ] 阶段 6：Advisory Router
