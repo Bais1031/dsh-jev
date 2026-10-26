@@ -41,8 +41,10 @@
     "lib/**/*.d.ts",
     "lib/**/*.d.ts.map",
     "README.md",
+    "README.en.md",
     "DEVELOPMENT_PLAN.md",
     "MARKETPLACE.md",
+    "docs/**/*.md",
     "LICENSE",
     "cordis.patch.yml"
   ],

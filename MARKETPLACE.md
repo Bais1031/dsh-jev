@@ -10,12 +10,14 @@
 - The bundle contributes one stable row id, `dsh-jev`, so Plugin Manager can enable, disable, update, or remove the whole plugin.
 - Credentials are referenced by name and resolved from DSH Credentials for each operation; the API key is not stored in bundle configuration.
 - Normal tests use mock HTTP and do not require network access or a real credential.
+- The Plugins page exposes live transport, routing, threshold, fallback, and tier-route configuration.
+- Shadow, Advisory, and Automatic modes record their decisions and preserve the documented safety fallbacks.
 
 ## Required before listing
 
-- Finish the supported plugin configuration and routing modes.
 - Remove `private: true`, confirm the `dsh-jev` npm name, and publish a stable npm version containing built `lib/` artifacts.
-- Inspect the packed tarball and verify installation into clean Web and Headless profiles without running an install script.
+- Inspect the packed tarball and verify installation into a clean Web profile without running an install script.
+- Either support the stock Headless profile's launch-time credentials or declare Headless unsupported consistently in package and market metadata.
 - Create the matching Git tag and release notes. Git-source fallback needs either committed build artifacts, an explicitly allowed `prepare` build, or a prebuilt release archive; npm remains the preferred installation source.
 - Add bilingual title and description, category, labels, and optional curated screenshots to the `awesome-dsh-plugin` entry.
 - Submit the plugin entry to `awesome-dsh-plugin`, not to the `dsh-market` application repository. Its catalogs update from that curated list, normally on their scheduled refresh.
