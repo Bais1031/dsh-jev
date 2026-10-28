@@ -10,8 +10,8 @@
 - The bundle contributes one stable row id, `dsh-jev`, so Plugin Manager can enable, disable, update, or remove the whole plugin.
 - Credentials are referenced by name and resolved from DSH Credentials for each operation; the API key is not stored in bundle configuration.
 - Normal tests use mock HTTP and do not require network access or a real credential.
-- The Plugins page exposes live transport, routing, threshold, fallback, and tier-route configuration.
-- Shadow, Advisory, and Automatic modes record their decisions and preserve the documented safety fallbacks.
+- The Plugins page exposes live transport, Shadow-node, confidence, input, output, cooldown, and per-Session call-limit configuration.
+- Shadow records paired decision requests and results without changing the provider, model, reasoning effort, tool permissions, or main-model context.
 
 ## Required before listing
 
@@ -35,7 +35,7 @@ https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json
 
 ## Security notes for the listing
 
-- State that TypeSafe receives the state and questions sent to `jev_decide`.
+- State that TypeSafe receives explicit `jev_decide` inputs and bounded text plus non-content signals at enabled automatic Shadow nodes.
 - State that Jev probabilities do not authorize deletion, payment, publishing, credential changes, or permission changes.
 - Document the `JEV_API_KEY` credential reference and confirm that logs and Session events never include its value.
 - Do not add telemetry or remote reporting without an explicit configuration field and documentation update.

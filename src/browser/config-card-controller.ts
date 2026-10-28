@@ -9,6 +9,7 @@ import {
   type SettingsFormScope,
   type SettingsFormShell,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { JevConnectionTestResult, JevLatestSessionSummary } from '../remote.js'
 
 /** Host settings namespace and bundle row id owned by this plugin. */
 export const DSH_JEV_NAMESPACE = 'dsh-jev'
@@ -21,17 +22,19 @@ export interface DshJevSettings {
   readonly apiKeyEnv?: string
   readonly endpoint?: string
   readonly model?: string
-  readonly routingMode?: 'off' | 'shadow' | 'advisory' | 'automatic'
-  readonly fallbackPolicy?: 'default-model' | 'user-selection' | 'fail-closed'
-  readonly minimumConfidence?: number
-  readonly minimumMargin?: number
   readonly timeoutMs?: number
   readonly maxInputBytes?: number
-  readonly metricsEnabled?: boolean
-  readonly routerMaxInputCharacters?: number
-  readonly fastRoute?: { readonly provider: string; readonly model: string }
-  readonly standardRoute?: { readonly provider: string; readonly model: string }
-  readonly deepRoute?: { readonly provider: string; readonly model: string }
+  readonly decisionMode?: 'off' | 'shadow' | 'advisory'
+  readonly decisionNodes?: string[]
+  readonly decisionCooldownSteps?: number
+  readonly decisionMaxCallsPerSession?: number
+  readonly decisionProgressCheckStep?: number
+  readonly decisionMinimumTaskInputCharacters?: number
+  readonly decisionMaxInputCharacters?: number
+  readonly decisionMaxOutputTokens?: number
+  readonly decisionMinimumConfidence?: number
+  readonly decisionIncludeToolResultSummaries?: boolean
+  readonly decisionToolResultSummaryCharacters?: number
 }
 
 /** Non-secret credential information returned to the page. */
@@ -48,6 +51,21 @@ export interface CredentialAccess {
   set(ref: string, value: string): Promise<{ readonly ok: boolean }>
 }
 
+/** Safe Host operations exposed to this page. */
+export interface DecisionStatusAccess {
+  /** @returns One billable endpoint check using the saved settings and credential. */
+  testConnection(): Promise<JevConnectionTestResult>
+  /** @returns Content-free totals for the latest live Session, if one has been observed. */
+  latestSessionSummary(): Promise<JevLatestSessionSummary | null>
+}
+
+/** Current state of the explicit connection check. */
+export type ConnectionTestState =
+  | { readonly status: 'idle' }
+  | { readonly status: 'testing' }
+  | { readonly status: 'success'; readonly model: string; readonly latencyMs: number }
+  | { readonly status: 'failure'; readonly code: string; readonly retryable: boolean }
+
 /** Complete page snapshot. */
 export interface DshJevConfigCardState extends SettingsFormShell {
   readonly apiKey: SettingsFieldState
@@ -56,17 +74,23 @@ export interface DshJevConfigCardState extends SettingsFormShell {
   readonly apiKeyEnv: SettingsFieldState
   readonly endpoint: SettingsFieldState
   readonly model: SettingsFieldState
-  readonly routingMode: SettingsFieldState
-  readonly fallbackPolicy: SettingsFieldState
-  readonly minimumConfidence: SettingsFieldState
-  readonly minimumMargin: SettingsFieldState
   readonly timeoutMs: SettingsFieldState
   readonly maxInputBytes: SettingsFieldState
-  readonly metricsEnabled: SettingsFieldState
-  readonly routerMaxInputCharacters: SettingsFieldState
-  readonly fastRoute: SettingsFieldState
-  readonly standardRoute: SettingsFieldState
-  readonly deepRoute: SettingsFieldState
+  readonly decisionMode: SettingsFieldState
+  readonly decisionNodes: SettingsFieldState
+  readonly decisionCooldownSteps: SettingsFieldState
+  readonly decisionMaxCallsPerSession: SettingsFieldState
+  readonly decisionProgressCheckStep: SettingsFieldState
+  readonly decisionMinimumTaskInputCharacters: SettingsFieldState
+  readonly decisionMaxInputCharacters: SettingsFieldState
+  readonly decisionMaxOutputTokens: SettingsFieldState
+  readonly decisionMinimumConfidence: SettingsFieldState
+  readonly decisionIncludeToolResultSummaries: SettingsFieldState
+  readonly decisionToolResultSummaryCharacters: SettingsFieldState
+  readonly connectionTest: ConnectionTestState
+  readonly latestSessionSummary: JevLatestSessionSummary | null
+  readonly summaryLoading: boolean
+  readonly summaryFailed: boolean
 }
 
 /** Registration-side callbacks and reactive state for the page. */
@@ -74,6 +98,8 @@ export interface DshJevConfigCardFace extends SettingsFormActions {
   readonly hooks: {
     readonly dshJevConfigCard: SnapshotStore<DshJevConfigCardState>
   }
+  testConnection(): void
+  refreshSummary(): void
 }
 
 interface CredentialState extends CredentialView {
@@ -87,6 +113,12 @@ export class DshJevConfigCardController {
   private readonly unsubscribe: () => void
   private credential: CredentialState = { ref: '', configured: false, writable: true }
   private disposed = false
+  private connectionGeneration = 0
+  private summaryGeneration = 0
+  private connectionTest: ConnectionTestState = { status: 'idle' }
+  private latestSessionSummary: JevLatestSessionSummary | null = null
+  private summaryLoading = false
+  private summaryFailed = false
 
   /**
    * @param scope - Shared form scope for the dsh-jev Host entry.
@@ -95,6 +127,7 @@ export class DshJevConfigCardController {
   constructor(
     private readonly scope: SettingsFormScope<DshJevSettings>,
     private readonly credentials: CredentialAccess,
+    private readonly status: DecisionStatusAccess,
   ) {
     this.form = new SettingsFormModel(scope, fieldSpecs(), [{
       field: API_KEY_FIELD,
@@ -116,17 +149,23 @@ export class DshJevConfigCardController {
       apiKeyEnv: this.form.field('apiKeyEnv'),
       endpoint: this.form.field('endpoint'),
       model: this.form.field('model'),
-      routingMode: this.form.field('routingMode'),
-      fallbackPolicy: this.form.field('fallbackPolicy'),
-      minimumConfidence: this.form.field('minimumConfidence'),
-      minimumMargin: this.form.field('minimumMargin'),
       timeoutMs: this.form.field('timeoutMs'),
       maxInputBytes: this.form.field('maxInputBytes'),
-      metricsEnabled: this.form.field('metricsEnabled'),
-      routerMaxInputCharacters: this.form.field('routerMaxInputCharacters'),
-      fastRoute: this.form.field('fastRoute'),
-      standardRoute: this.form.field('standardRoute'),
-      deepRoute: this.form.field('deepRoute'),
+      decisionMode: this.form.field('decisionMode'),
+      decisionNodes: this.form.field('decisionNodes'),
+      decisionCooldownSteps: this.form.field('decisionCooldownSteps'),
+      decisionMaxCallsPerSession: this.form.field('decisionMaxCallsPerSession'),
+      decisionProgressCheckStep: this.form.field('decisionProgressCheckStep'),
+      decisionMinimumTaskInputCharacters: this.form.field('decisionMinimumTaskInputCharacters'),
+      decisionMaxInputCharacters: this.form.field('decisionMaxInputCharacters'),
+      decisionMaxOutputTokens: this.form.field('decisionMaxOutputTokens'),
+      decisionMinimumConfidence: this.form.field('decisionMinimumConfidence'),
+      decisionIncludeToolResultSummaries: this.form.field('decisionIncludeToolResultSummaries'),
+      decisionToolResultSummaryCharacters: this.form.field('decisionToolResultSummaryCharacters'),
+      connectionTest: this.connectionTest,
+      latestSessionSummary: this.latestSessionSummary,
+      summaryLoading: this.summaryLoading,
+      summaryFailed: this.summaryFailed,
     }
   }
 
@@ -164,7 +203,48 @@ export class DshJevConfigCardController {
 
   /** @returns Reactive state and staged-form actions for slot injection. */
   inject(): DshJevConfigCardFace {
-    return { hooks: { dshJevConfigCard: this.store }, ...this.form.actions() }
+    return {
+      hooks: { dshJevConfigCard: this.store },
+      ...this.form.actions(),
+      testConnection: () => { void this.runConnectionTest() },
+      refreshSummary: () => { void this.readSummary() },
+    }
+  }
+
+  private async runConnectionTest(): Promise<void> {
+    if (this.disposed || this.connectionTest.status === 'testing') return
+    const generation = ++this.connectionGeneration
+    this.connectionTest = { status: 'testing' }
+    this.store.set(this.projection())
+    let result: JevConnectionTestResult
+    try {
+      result = await this.status.testConnection()
+    } catch (_error) {
+      result = { ok: false, code: 'CLIENT_REMOTE_UNAVAILABLE', retryable: false }
+    }
+    if (this.disposed || generation !== this.connectionGeneration) return
+    this.connectionTest = result.ok
+      ? { status: 'success', model: result.model, latencyMs: result.latencyMs }
+      : { status: 'failure', code: result.code, retryable: result.retryable }
+    this.store.set(this.projection())
+  }
+
+  private async readSummary(): Promise<void> {
+    if (this.disposed || this.summaryLoading) return
+    const generation = ++this.summaryGeneration
+    this.summaryLoading = true
+    this.summaryFailed = false
+    this.store.set(this.projection())
+    try {
+      const result = await this.status.latestSessionSummary()
+      if (this.disposed || generation !== this.summaryGeneration) return
+      this.latestSessionSummary = result
+    } catch (_error) {
+      if (this.disposed || generation !== this.summaryGeneration) return
+      this.summaryFailed = true
+    }
+    this.summaryLoading = false
+    this.store.set(this.projection())
   }
 
   private async writeKey(value: string): Promise<boolean> {
@@ -178,6 +258,8 @@ export class DshJevConfigCardController {
   /** Stop subscriptions and prevent pending remote reads from publishing. */
   dispose(): void {
     this.disposed = true
+    this.connectionGeneration += 1
+    this.summaryGeneration += 1
     this.unsubscribe()
     this.form.dispose()
   }
@@ -188,55 +270,49 @@ function fieldSpecs(): SettingsFieldSpec[] {
     textField('apiKeyEnv', text => /^[A-Za-z_][A-Za-z0-9_]*$/.test(text)),
     textField('endpoint', text => isHttpUrl(text)),
     textField('model', text => text.length > 0),
-    textField('routingMode', text => ['off', 'shadow', 'advisory', 'automatic'].includes(text)),
-    textField('fallbackPolicy', text => ['default-model', 'user-selection', 'fail-closed'].includes(text)),
-    numberField('minimumConfidence', value => value >= 0 && value <= 1),
-    numberField('minimumMargin', value => value >= 0 && value <= 1),
     numberField('timeoutMs', value => Number.isInteger(value) && value >= 1 && value <= 120_000),
     numberField('maxInputBytes', value => Number.isInteger(value) && value >= 1 && value <= 10_000_000),
-    numberField('routerMaxInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
-    routeField('fastRoute'),
-    routeField('standardRoute'),
-    routeField('deepRoute'),
-    {
-      field: 'metricsEnabled',
-      format: value => typeof value === 'boolean' ? String(value) : '',
-      parse: (text) => {
-        const normalized = text.trim().toLowerCase()
-        if (normalized === '') return { kind: 'clear' }
-        if (normalized === 'true') return { kind: 'set', value: true }
-        if (normalized === 'false') return { kind: 'set', value: false }
-        return undefined
-      },
-    },
+    textField('decisionMode', text => ['off', 'shadow', 'advisory'].includes(text)),
+    listField('decisionNodes', new Set([
+      'task-intake', 'missing-information', 'direction-selection', 'tool-recovery', 'progress-check', 'pre-conclusion',
+    ])),
+    numberField('decisionCooldownSteps', value => Number.isInteger(value) && value >= 0 && value <= 100),
+    numberField('decisionMaxCallsPerSession', value => Number.isInteger(value) && value >= 1 && value <= 1_000),
+    numberField('decisionProgressCheckStep', value => Number.isInteger(value) && value >= 2 && value <= 1_000),
+    numberField('decisionMinimumTaskInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
+    numberField('decisionMaxInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
+    numberField('decisionMaxOutputTokens', value => Number.isInteger(value) && value >= 1 && value <= 10_000),
+    numberField('decisionMinimumConfidence', value => value >= 0 && value <= 1),
+    booleanField('decisionIncludeToolResultSummaries'),
+    numberField('decisionToolResultSummaryCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
   ]
 }
 
-function routeField(field: string): SettingsFieldSpec {
+function booleanField(field: string): SettingsFieldSpec {
   return {
     field,
-    format: (value) => {
-      if (!isRecord(value) || typeof value.provider !== 'string' || typeof value.model !== 'string') return ''
-      return `${value.provider}/${value.model}`
-    },
+    format: value => value === true ? 'true' : value === false ? 'false' : '',
     parse: (text) => {
-      const normalized = text.trim()
+      const normalized = text.trim().toLowerCase()
       if (normalized === '') return { kind: 'clear' }
-      const separator = normalized.indexOf('/')
-      if (separator < 1 || separator === normalized.length - 1) return undefined
-      const provider = normalized.slice(0, separator).trim()
-      const model = normalized.slice(separator + 1).trim()
-      if (provider.length === 0 || model.length === 0) return undefined
-      return {
-        kind: 'set',
-        value: { provider, model },
-      }
+      if (normalized === 'true') return { kind: 'set', value: true }
+      if (normalized === 'false') return { kind: 'set', value: false }
+      return undefined
     },
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function listField(field: string, allowed: ReadonlySet<string>): SettingsFieldSpec {
+  return {
+    field,
+    format: value => Array.isArray(value) && value.every(item => typeof item === 'string') ? value.join(', ') : '',
+    parse: (text) => {
+      const values = text.split(',').map(value => value.trim()).filter(value => value.length > 0)
+      if (values.length === 0) return { kind: 'clear' }
+      if (new Set(values).size !== values.length || values.some(value => !allowed.has(value))) return undefined
+      return { kind: 'set', value: values }
+    },
+  }
 }
 
 function textField(field: string, accepts: (text: string) => boolean): SettingsFieldSpec {

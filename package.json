@@ -1,7 +1,7 @@
 {
   "name": "dsh-jev",
   "version": "0.1.0",
-  "description": "TypeSafe Jev decision provider and router for DeepSeek Harness",
+  "description": "TypeSafe Jev decision guidance for DeepSeek Harness",
   "private": true,
   "publishConfig": {
     "access": "public"
@@ -17,7 +17,7 @@
     "dsh-plugin",
     "jev",
     "typesafe-ai",
-    "decision-routing",
+    "decision-guidance",
     "agent"
   ],
   "type": "module",
@@ -31,6 +31,14 @@
     "./client": {
       "types": "./lib/browser/index.d.ts",
       "default": "./lib/client-plugin.js"
+    },
+    "./remote": {
+      "types": "./lib/remote.d.ts",
+      "default": "./lib/remote.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.d.ts",
+      "default": "./lib/typert.js"
     },
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
@@ -49,10 +57,12 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "pnpm run build:types && pnpm run build:client",
+    "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && pnpm run build:types && pnpm run build:client",
     "build:types": "tsc -p tsconfig.build.json",
     "build:client": "tsdown",
     "test": "vitest run",
+    "eval": "vitest run tests/evaluation.spec.ts --configLoader runner",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
@@ -76,7 +86,8 @@
   "packageManager": "pnpm@11.28.5",
   "license": "MIT",
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.18.5"
+    "@deepseek-ai/schemastery": "~3.18.5",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0",
@@ -84,8 +95,8 @@
     "@deepseek-ai/dsh-credentials": ">=0.2.1-rc.2 <0.3.0",
     "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0",
     "@deepseek-ai/dsh-session": ">=0.2.1-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.3.0",
-    "@deepseek-ai/dsh-user-questions": ">=0.2.1-rc.2 <0.3.0"
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.3.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
@@ -103,9 +114,9 @@
     "@deepseek-ai/dsh-util-workspace-path": "0.2.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
     "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-user-questions": "0.2.1-rc.2",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
     "@shikijs/langs": "^4.4.3",

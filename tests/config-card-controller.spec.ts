@@ -21,7 +21,7 @@ describe('DshJevConfigCardController', () => {
       })),
       set: vi.fn(async () => ({ ok: true })),
     }
-    const controller = new DshJevConfigCardController(scope, credentials)
+    const controller = new DshJevConfigCardController(scope, credentials, statusStub())
     try {
       await vi.waitFor(() => {
         expect(controller.inject().hooks.dshJevConfigCard.getSnapshot()).toMatchObject({
@@ -36,20 +36,22 @@ describe('DshJevConfigCardController', () => {
     }
   })
 
-  it('blocks invalid router fields before any Host mutation', () => {
-    const scope = new TestScope({ routingMode: 'off', minimumConfidence: 0.85 })
-    const controller = new DshJevConfigCardController(scope, credentialStub())
+  it('blocks invalid transport fields before any Host mutation', () => {
+    const scope = new TestScope({ timeoutMs: 10_000, decisionMode: 'off' })
+    const controller = new DshJevConfigCardController(scope, credentialStub(), statusStub())
     try {
       const face = controller.inject()
-      face.edit('routingMode', 'sometimes')
-      face.edit('minimumConfidence', '1.1')
-      face.edit('fastRoute', 'missing-model/')
+      face.edit('timeoutMs', '0')
+      face.edit('endpoint', 'not-a-url')
+      face.edit('decisionMode', 'automatic')
+      face.edit('decisionNodes', 'task-intake, task-intake')
       expect(face.hooks.dshJevConfigCard.getSnapshot()).toMatchObject({
         dirty: true,
         invalid: true,
-        routingMode: { invalid: true },
-        minimumConfidence: { invalid: true },
-        fastRoute: { invalid: true },
+        timeoutMs: { invalid: true },
+        endpoint: { invalid: true },
+        decisionMode: { invalid: true },
+        decisionNodes: { invalid: true },
       })
       face.save()
       expect(scope.mutations).toEqual([])
@@ -61,9 +63,9 @@ describe('DshJevConfigCardController', () => {
   it('saves settings atomically before writing the key under the accepted reference', async () => {
     const scope = new TestScope({
       apiKeyEnv: DEFAULT_API_KEY_REF,
-      routingMode: 'off',
-      minimumConfidence: 0.85,
-      metricsEnabled: true,
+      timeoutMs: 10_000,
+      decisionMode: 'off',
+      decisionNodes: ['task-intake'],
     })
     let configured = false
     const credentials: CredentialAccess = {
@@ -73,14 +75,13 @@ describe('DshJevConfigCardController', () => {
       })),
       set: vi.fn(async () => { configured = true; return { ok: true } }),
     }
-    const controller = new DshJevConfigCardController(scope, credentials)
+    const controller = new DshJevConfigCardController(scope, credentials, statusStub())
     try {
       const face = controller.inject()
       face.edit('apiKeyEnv', 'JEV_ROUTER_KEY')
-      face.edit('routingMode', 'shadow')
-      face.edit('minimumConfidence', '0.9')
-      face.edit('metricsEnabled', 'false')
-      face.edit('fastRoute', 'deepseek-official/deepseek-chat')
+      face.edit('timeoutMs', '9000')
+      face.edit('decisionMode', 'shadow')
+      face.edit('decisionNodes', 'task-intake, tool-recovery')
       face.edit('apiKey', 'secret-never-returned')
       face.save()
 
@@ -94,10 +95,9 @@ describe('DshJevConfigCardController', () => {
       })
       expect(scope.mutations).toEqual([[
         { op: 'set', path: ['apiKeyEnv'], value: 'JEV_ROUTER_KEY' },
-        { op: 'set', path: ['routingMode'], value: 'shadow' },
-        { op: 'set', path: ['minimumConfidence'], value: 0.9 },
-        { op: 'set', path: ['metricsEnabled'], value: false },
-        { op: 'set', path: ['fastRoute'], value: { provider: 'deepseek-official', model: 'deepseek-chat' } },
+        { op: 'set', path: ['timeoutMs'], value: 9000 },
+        { op: 'set', path: ['decisionMode'], value: 'shadow' },
+        { op: 'set', path: ['decisionNodes'], value: ['task-intake', 'tool-recovery'] },
       ]])
     } finally {
       controller.dispose()
@@ -112,7 +112,7 @@ describe('DshJevConfigCardController', () => {
       set: vi.fn(async () => ({ ok: true })),
     }
     const scope = new TestScope({ apiKeyEnv: DEFAULT_API_KEY_REF })
-    const controller = new DshJevConfigCardController(scope, credentials)
+    const controller = new DshJevConfigCardController(scope, credentials, statusStub())
     const face = controller.inject()
     scope.replace({ apiKeyEnv: 'OTHER_KEY' })
     second.resolve({ ok: true, value: { OTHER_KEY: { configured: true, writable: true } } })
@@ -135,6 +135,54 @@ describe('DshJevConfigCardController', () => {
       apiKeyConfigured: true,
       apiKeyWritable: true,
     })
+  })
+
+  it('publishes connection and content-free Session summary states', async () => {
+    const scope = new TestScope({ apiKeyEnv: DEFAULT_API_KEY_REF })
+    const status = {
+      testConnection: vi.fn(async () => ({ ok: true as const, model: 'jev-live', latencyMs: 17 })),
+      latestSessionSummary: vi.fn(async () => ({
+        sessionId: 'session-1', calls: 2, successes: 1, failures: 1, pending: 0,
+        inputTokens: 20, outputTokens: 4, totalTokens: 24, totalLatencyMs: 33,
+      })),
+    }
+    const controller = new DshJevConfigCardController(scope, credentialStub(), status)
+    try {
+      const face = controller.inject()
+      face.testConnection()
+      face.refreshSummary()
+      await vi.waitFor(() => {
+        expect(face.hooks.dshJevConfigCard.getSnapshot()).toMatchObject({
+          connectionTest: { status: 'success', model: 'jev-live', latencyMs: 17 },
+          latestSessionSummary: { sessionId: 'session-1', totalTokens: 24 },
+          summaryLoading: false,
+          summaryFailed: false,
+        })
+      })
+      expect(status.testConnection).toHaveBeenCalledOnce()
+      expect(status.latestSessionSummary).toHaveBeenCalledOnce()
+    } finally {
+      controller.dispose()
+    }
+  })
+
+  it('contains remote failures and ignores results after disposal', async () => {
+    const pending = deferred<{ readonly ok: true; readonly model: string; readonly latencyMs: number }>()
+    const status = {
+      testConnection: vi.fn(() => pending.promise),
+      latestSessionSummary: vi.fn(async () => { throw new Error('transport detail') }),
+    }
+    const controller = new DshJevConfigCardController(new TestScope({}), credentialStub(), status)
+    const face = controller.inject()
+    face.refreshSummary()
+    await vi.waitFor(() => {
+      expect(face.hooks.dshJevConfigCard.getSnapshot()).toMatchObject({ summaryLoading: false, summaryFailed: true })
+    })
+    face.testConnection()
+    controller.dispose()
+    pending.resolve({ ok: true, model: 'late', latencyMs: 1 })
+    await Promise.resolve()
+    expect(face.hooks.dshJevConfigCard.getSnapshot().connectionTest).toEqual({ status: 'testing' })
   })
 })
 
@@ -187,6 +235,13 @@ function credentialStub(): CredentialAccess {
       value: { [refs[0] ?? '']: { configured: false, writable: true } },
     }),
     set: async () => ({ ok: true }),
+  }
+}
+
+function statusStub() {
+  return {
+    testConnection: async () => ({ ok: true as const, model: 'jev-test', latencyMs: 1 }),
+    latestSessionSummary: async () => null,
   }
 }
 

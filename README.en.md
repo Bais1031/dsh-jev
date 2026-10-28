@@ -2,13 +2,13 @@
 
 [![中文](https://img.shields.io/badge/语言-中文-2f81f7)](./README.md) [![English](https://img.shields.io/badge/Language-English-6e7781)](./README.en.md)
 
-TypeSafe Jev decision provider and router for DeepSeek Harness. The current implementation contains the System One HTTP client, provider-independent `DecisionService`, `jev_decide` tool, Plugins-page configuration, and Shadow, Advisory, and Automatic routing modes.
+TypeSafe Jev decision guidance for DeepSeek Harness. The plugin calls Jev at critical analysis nodes selected by deterministic rules and records short probabilistic decision briefs for later evaluation of decision accuracy and unproductive main-model exploration.
 
-Stages 0 through 7 are implemented locally. Stage 8 covers real-API qualification, local metrics, calibration, release documentation, CI, npm publication, and plugin-market acceptance. See the [stage overview](./DEVELOPMENT_PLAN.md) and the [detailed stage 8 plan](./docs/stage-8-development-plan.md).
+The plugin supports `off`, `shadow`, and `advisory`. Shadow only records analysis; Advisory adds briefs that pass protocol and confidence checks to the current model request. Neither mode changes the provider, model, or reasoning effort selected by DSH or grants tool permissions. See the [development plan](./DEVELOPMENT_PLAN.md) for the stages and acceptance order and the [Milestone A](./docs/milestone-a-acceptance.md) and [Milestone B](./docs/milestone-b-acceptance.md) acceptance reports for evidence.
 
-## Install in DeepSeek Harness
+## Installation
 
-The plugin is not published to npm yet. Build it, then install this checkout into a profile:
+The plugin is not published to npm. Build this checkout, then install it into the DSH Web profile:
 
 ```sh
 pnpm install
@@ -16,15 +16,13 @@ pnpm build
 dsh plugin --profile web add /home/jzl/projects/dsh-jev
 ```
 
-When running DSH from its source checkout, use `pnpm dsh plugin --profile web add /home/jzl/projects/dsh-jev` from the DSH repository. A different profile must provide the DSH Credentials and Tools services; the stock one-shot `headless` profile intentionally disables the interactive credential store and cannot load this plugin.
+When running from the DSH source checkout, run `pnpm dsh plugin --profile web add /home/jzl/projects/dsh-jev` in the DSH repository. Other profiles must provide Credentials, Tools, Agent, and Session services. The stock one-shot `headless` profile disables interactive credential storage and cannot currently load this plugin.
 
-The bundle adds one `dsh-jev` row. Plugin Manager can disable, enable, update, remove, and configure that row. Open **Plugins**, select **dsh-jev**, then select the inner **dsh-jev** component row to open its configuration form. Set `JEV_API_KEY` through DSH Credentials or the Harness environment; do not place the key itself in `cordis.patch.yml`.
+The bundle adds one `dsh-jev` row. Open **Plugins**, select **dsh-jev**, then select its inner **dsh-jev** component to configure it. Set `JEV_API_KEY` through DSH Credentials or the Harness process environment; do not place the key itself in `cordis.patch.yml`.
 
 ## Configuration
 
-The configuration form can update the credential reference, endpoint, model, timeout, input limits, routing mode, fallback policy, routing thresholds, and the stage 8 metrics reservation without restarting DSH. Required routing audit records remain enabled regardless of that reserved setting. The metrics switch does not aggregate or display statistics until stage 8.2 is implemented. The API key field writes to DSH Credentials and is never read back into the browser. The provider name is intentionally fixed for the lifetime of the loaded component because it identifies the registered decision provider.
-
-The default bundle configuration uses `JEV_API_KEY`, `jev-latest`, and the TypeSafe System One endpoint. A complete profile example with optional tier routes is:
+The following profile configuration enables Advisory and limits critical nodes, call frequency, and Jev input and output. Set `decisionMode` to `shadow` to record briefs without injection:
 
 ```yaml
 - id: dsh-jev
@@ -36,98 +34,89 @@ The default bundle configuration uses `JEV_API_KEY`, `jev-latest`, and the TypeS
     providerName: jev
     timeoutMs: 10000
     maxInputBytes: 1000000
-    routerMaxInputCharacters: 4000
-    fastRoute:
-      provider: deepseek-official
-      model: deepseek-flash
-    standardRoute:
-      provider: deepseek-official
-      model: deepseek-chat
-    deepRoute:
-      provider: deepseek-official
-      model: deepseek-reasoner
+    decisionMode: advisory
+    decisionNodes:
+      - task-intake
+      - tool-recovery
+      - progress-check
+    decisionCooldownSteps: 3
+    decisionMaxCallsPerSession: 8
+    decisionProgressCheckStep: 4
+    decisionMinimumTaskInputCharacters: 200
+    decisionMaxInputCharacters: 6000
+    decisionMaxOutputTokens: 250
+    decisionMinimumConfidence: 0.7
+    decisionIncludeToolResultSummaries: false
+    decisionToolResultSummaryCharacters: 1000
 ```
 
-If an older DSH process was already running when this plugin was rebuilt or updated, restart that process once so it loads the current configuration schema and client bundle.
+`decisionMaxOutputTokens` is a result-acceptance limit. The current System One call does not expose a generation-token limit that this plugin can set, so an oversized response is recorded as a failure after its upstream usage has already occurred.
 
-After activation, Agents can call `jev_decide` with named Boolean, Choice, and Score questions. Tool calls and results use the normal DSH Session log. Credential values are resolved for each operation and are never included in tool arguments or results.
+Plugin settings are live volatile fields; later calls read saved values without a restart. The API key field writes through DSH Credentials and the browser never reads the secret back. Test connection asks the Host to make one small, potentially billable Jev request with saved settings; it creates no Agent or Session, and the page receives only the model and latency or a safe error code. The page also shows content-free totals for the latest live Session plus data-scope and fallback explanations. `providerName` identifies the registered Decision provider and remains fixed for the lifetime of the loaded component.
 
-## Shadow routing
+## Critical nodes
 
-Set **Routing mode** to `shadow` to evaluate routing advice before each newly admitted Agent step. Shadow mode never changes the provider, model, or reasoning effort selected by DSH. It records an ignorable `plugin:dsh-jev/router-request` entry before dispatch and a paired `plugin:dsh-jev/router-result` entry with the task signals, probabilities, recommendation, actual route, latency, and token use. Provider failures are recorded as structured, secret-free failures and the original route continues.
+The local trigger does not call a model to decide whether Jev is needed. It selects one enabled node in priority order:
 
-The router sends only text from the current admitted user batch, bounded by **Router input characters**. Its exact bounded Jev request is recorded so the auxiliary model call remains reconstructable. Set the routing mode to `off` to prevent router calls and records; the explicit `jev_decide` tool remains available.
+- `tool-recovery`: the previous step has a failed tool result.
+- `pre-conclusion`: the previous step produced successful tool evidence and the next step has no new text.
+- `progress-check`: the step reaches the configured progress threshold.
+- `missing-information`: the current text contains an explicit missing-information or clarification signal.
+- `direction-selection`: the current text contains comparison, choice, or alternative signals.
+- `task-intake`: the first step contains a complex-task signal or reaches the configured character threshold.
 
-## Advisory and automatic routing
+The trigger deduplicates one turn/step and enforces a cooldown and per-live-Agent-Session call limit. A short translation, format conversion, or task without a critical-node signal does not call Jev automatically.
 
-Configure one or more concrete **Fast route**, **Standard route**, and **Deep route** values as `provider/model`. In `advisory` mode, Jev presents its configured recommendation, confidence, probability gap, and risk through the DSH question UI. The route changes for that step only when the user chooses the recommended route; declining, cancelling, an unavailable question UI, or an unconfigured tier keeps the current route.
+By default, only current user text bounded by the total character limit is sent. Enabling `decisionIncludeToolResultSummaries` may add a bounded text-only excerpt from the immediately preceding tool result; tool arguments and binary blocks are always excluded. A current user message matching a likely credential suppresses the Jev call, and a matching tool-result block is excluded from the excerpt.
 
-In `automatic` mode, a configured route is applied only when the recommendation and risk classifications meet both thresholds, risk is `low`, and ambiguity is not `high`. The operation changes only the model route; it never authorizes tools, deletion, payment, publication, credential access, permission changes, or other external actions.
+## Shadow and Advisory
 
-Automatic fallback behavior is controlled by **Failure fallback**:
+When a critical node is selected, the plugin first writes an ignorable `plugin:dsh-jev/decision-request` with protocol versions, trigger evidence, non-content signals, input statistics, and the exact bounded Jev request. It then writes a paired `plugin:dsh-jev/decision-result` containing either the structured brief or a secret-free failure, latency, and token usage.
 
-- `default-model` keeps the route DSH had already selected.
-- `user-selection` asks for confirmation when Jev returned a recommendation with a configured target; otherwise it keeps the user's current route.
-- `fail-closed` stops the model request after recording the reason.
+Library consumers can call `summarizeDecisionGuidance(session)` to aggregate calls, outcomes, Jev tokens, latency, and node distribution locally. The summary omits request content and answers.
 
-Every Advisory prompt, answer outcome, automatic application, and fallback is recorded as an ignorable `plugin:dsh-jev/*` Session entry without credentials.
+The decision brief uses fixed vocabularies for task type, information sufficiency, recommended action, candidate directions, behavior to avoid, risk, ambiguity, and confidence. The protocol retains at most three candidate directions and does not ask Jev for hidden reasoning or unrestricted prose.
+
+Shadow only stores these records and does not change main-model input. Advisory adds a source-attributed brief that passes validation and the minimum confidence threshold to the current step. Both the message and exact brief record enter the Session, so replay can reconstruct the model input. The brief tells the main model to assess the original evidence independently and permits it to accept, adapt, or reject the advice.
+
+A Jev timeout, invalid response, low confidence, or output-limit rejection injects no content and does not replace or block the main-model route; the current step only incurs Jev call latency. The brief contains fixed protocol values rather than Jev free text and explicitly cannot authorize tools, deletion, payment, publication, credential access, or permission changes.
+
+Set `decisionMode` to `off` to prevent automatic Jev calls and decision records. The explicit `jev_decide` tool remains available.
+
+## Local reports and evaluation
+
+`createDecisionGuidanceReport(session)` aggregates main-model tokens, Jev tokens, total tokens, Agent steps, tool calls, repeated tool calls, latency, Advisory adoption labels, and task outcomes. `renderDecisionGuidanceReportJson` and `renderDecisionGuidanceReportMarkdown` export content-free metrics only; they do not copy messages, Jev requests, answers, tool arguments, or credentials. An evaluator must label task success and adoption explicitly with `recordDecisionGuidanceOutcome`; a normal `turn/end: completed` does not establish correctness.
+
+The versioned evaluation dataset covers simple tasks, missing information, multi-path diagnosis, coding debug, tool failure, high-risk operations, incorrect advice, Jev timeout, prompt injection, and sensitive data. Run its repeatable controlled acceptance with:
+
+```sh
+pnpm eval
+```
+
+The evaluator runs Baseline, Shadow, and Advisory for the same tasks and reports success rate, critical-decision accuracy, average total tokens per successful task, unproductive tool calls, steps, latency, mis-trigger rate, Brier Score, and ECE. Synthetic evidence validates the evaluation pipeline but cannot open the release gate; Advisory needs complete, paired, repeatable real runs that satisfy every condition. Users still select the active mode explicitly.
+
+## Explicit decision tool
+
+An Agent can call `jev_decide` with multiple named Boolean, Choice, and Score questions. The plugin resolves credentials for every operation and returns provider, model, latency, token usage, and structured probabilities.
+
+For Boolean answers, `value` uses a `0.5` threshold as a convenience projection. Safety policy must read `probability` with deterministic rules and must not use a Jev answer to authorize deletion, payment, publication, credential, or permission operations.
+
+## Model-routing migration
+
+The former Shadow, Advisory, and Automatic model router has been removed. The plugin no longer reads `fastRoute`, `standardRoute`, `deepRoute`, or routing fallback fields, and it never changes the user's selected model. See the [stage 8 migration](./docs/stage-8-development-plan.md) for removed fields and historical Session record behavior.
 
 ## Development
 
 ```sh
 pnpm install
 pnpm test
+pnpm eval
 pnpm typecheck
 pnpm build
 ```
 
-Normal tests use a mocked HTTP transport and do not require `JEV_API_KEY`.
-
-The remaining work is organized as independently accepted stage 8 increments:
-
-1. Real API qualification and a connection-test action.
-2. Local metrics with JSON and Markdown reports.
-3. Labeled evaluation data and probability calibration.
-4. Privacy, upgrade, uninstall, troubleshooting, and bilingual release documentation.
-5. CI, clean-profile installation, and a Headless support decision.
-6. npm and GitHub release.
-7. Community catalog submission and market installation acceptance.
-
-The [stage 8 development plan](./docs/stage-8-development-plan.md) owns the scope and acceptance criteria for these increments.
-
-## DecisionService
-
-```ts
-import { DecisionService, JEV_PROVIDER_NAME, JevClient, JevDecisionProvider } from 'dsh-jev'
-
-const decisions = new DecisionService({ defaultProvider: JEV_PROVIDER_NAME })
-decisions.registerProvider(new JevDecisionProvider({
-  client: new JevClient(),
-  resolveApiKey: async () => obtainCurrentCredential(),
-}))
-
-const result = await decisions.decide({
-  state: 'Review and publish this release.',
-  questions: {
-    task: {
-      type: 'choice',
-      options: {
-        analysis: 'Analyze without changing external state',
-        operation: 'Change external state',
-      },
-    },
-    highRisk: {
-      type: 'boolean',
-      instructions: 'Does this involve publishing, credentials, deletion, or payment?',
-    },
-  },
-})
-```
-
-The service resolves credentials for every operation, forwards cancellation, and returns provider, model, latency, token usage, and structured probabilities. It never chooses a fallback provider implicitly. Consumers own fallback and authorization policy.
-
-For boolean answers, `value` uses a `0.5` threshold as a convenience projection. Safety policy should use `probability` and deterministic rules rather than treating `value` as authorization.
+Normal tests and `pnpm eval` use mocked or synthetic transports and do not require `JEV_API_KEY`. The current code contains the decision protocol, critical-node trigger, Shadow, Advisory, local metrics, and the three-mode evaluation pipeline. Stage 16 Guided mode is not implemented; stronger intervention remains disabled until real evaluation shows no success regression, improved critical decisions, and lower cost or unproductive exploration.
 
 ## Plugin market
 
-The repository is structured for future DeepSeek Harness market distribution, but it is not listed or published yet. See the [stage 8 development plan](./docs/stage-8-development-plan.md) for the ordered release work and [MARKETPLACE.md](./MARKETPLACE.md) for the `awesome-dsh-plugin` submission checklist.
+The repository is organized for future DeepSeek Harness plugin-market distribution but is not published or listed. Release still requires real-API qualification, privacy documentation, clean-profile installation, CI, npm/GitHub Release, and market installation tests. See [MARKETPLACE.md](./MARKETPLACE.md) for submission requirements.

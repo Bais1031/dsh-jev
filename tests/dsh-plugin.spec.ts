@@ -2,13 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { pluginRecordOf, Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import type { AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
+import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import DshDecisionService, { Config } from '../src/dsh-plugin.js'
-
-const seenUserQuestions: AskUserQuestionRequest[] = []
 
 class TestCredentials extends Service {
   private readonly values: string[]
@@ -24,19 +22,6 @@ class TestCredentials extends Service {
   }
 }
 
-class TestUserQuestions extends Service {
-  constructor(ctx: Context) {
-    super(ctx, 'userQuestions')
-  }
-
-  ask(request: AskUserQuestionRequest) {
-    seenUserQuestions.push(request)
-    const question = request.questions[0]
-    const label = question?.options?.[0]?.label ?? ''
-    return Promise.resolve({ answers: [{ id: question?.id ?? '', selected: [label] }] })
-  }
-}
-
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -45,13 +30,37 @@ describe('DSH plugin integration', () => {
   it('publishes every browser-editable field as live configuration', () => {
     const fields = [
       'apiKeyEnv', 'endpoint', 'model', 'timeoutMs', 'maxInputBytes',
-      'routingMode', 'fallbackPolicy', 'minimumConfidence', 'minimumMargin', 'metricsEnabled',
-      'routerMaxInputCharacters',
-      'fastRoute', 'standardRoute', 'deepRoute',
+      'decisionMode', 'decisionNodes', 'decisionCooldownSteps', 'decisionMaxCallsPerSession',
+      'decisionProgressCheckStep', 'decisionMinimumTaskInputCharacters', 'decisionMaxInputCharacters',
+      'decisionMaxOutputTokens', 'decisionMinimumConfidence',
+      'decisionIncludeToolResultSummaries', 'decisionToolResultSummaryCharacters',
     ]
     expect(fields.map(field => [field, Config.dict?.[field]?.meta.volatile]))
       .toEqual(fields.map(field => [field, true]))
     expect(Config.dict?.providerName?.meta.volatile).toBeUndefined()
+  })
+
+  it('exposes marked Host operations and returns only safe connection metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({
+      model: 'jev-1.14',
+      answers: { reachable: { type: 'noul', noul: 0.99 } },
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }), { headers: { 'content-type': 'application/json' } })))
+    const ctx = await boot(['connection-key'])
+    try {
+      expect(remoteMethods(ctx.decisions).map(method => method.exportName)).toEqual([
+        'testConnection',
+        'latestSessionSummary',
+      ])
+      await expect(ctx.decisions.remoteTestConnection(new AbortController().signal)).resolves.toEqual({
+        ok: true,
+        model: 'jev-1.14',
+        latencyMs: expect.any(Number),
+      })
+      await expect(ctx.decisions.remoteLatestSessionSummary()).resolves.toBeNull()
+    } finally {
+      await ctx.fiber.dispose()
+    }
   })
 
   it('publishes ctx.decisions, registers jev_decide, and resolves rotated credentials', async () => {
@@ -169,21 +178,25 @@ describe('DSH plugin integration', () => {
     }
   })
 
-  it('uses the DSH question service before applying an Advisory route', async () => {
-    seenUserQuestions.length = 0
-    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(routerJevResponse('deep')))
+  it('records Shadow guidance without changing the downstream model route', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(decisionGuidanceResponse()))
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
     await ctx.plugin(TestCredentials, ['key'])
-    await ctx.plugin(TestUserQuestions)
     await ctx.plugin(DshDecisionService, {
-      routingMode: 'advisory',
-      deepRoute: { provider: 'premium', model: 'reasoner' },
+      decisionMode: 'shadow',
+      decisionNodes: ['task-intake'],
+      decisionCooldownSteps: 0,
+      decisionMinimumTaskInputCharacters: 1,
     })
-    const session = Session.create(SessionId('advisory-plugin'))
+    const session = Session.create(SessionId('shadow-plugin'))
     const agent = { session } as Agent
-    const messages = [createUserMessage({ content: [{ type: 'text', text: 'Analyze this carefully' }], source: { kind: 'user' } })]
+    const messages = [createUserMessage({
+      content: [{ type: 'text', text: 'Analyze this decision.' }],
+      source: { kind: 'user' },
+    })]
+    const selected = { provider: 'main', model: 'user-selected' } as const
     try {
       await ctx.waterfall(
         ctx as never,
@@ -191,20 +204,23 @@ describe('DSH plugin integration', () => {
         { agent, messages, turn: 1, step: 1, signal: new AbortController().signal },
         () => Promise.resolve({ kind: 'enter' as const, messages }),
       )
-      const selected = await ctx.waterfall(
+      const actual = await ctx.waterfall(
         ctx as never,
         'agent/request',
         { agent, turn: 1, step: 1, signal: new AbortController().signal },
-        () => Promise.resolve({ provider: 'main', model: 'standard' }),
+        () => Promise.resolve(selected),
       )
 
-      expect(selected).toEqual({ provider: 'premium', model: 'reasoner' })
-      expect(seenUserQuestions[0]?.questions[0]).toMatchObject({ id: 'dsh-jev-route' })
-      expect(seenUserQuestions[0]?.questions[0]?.options?.[0]?.label).toBe('Use premium/reasoner')
+      expect(actual).toBe(selected)
+      expect(session.snapshotEvents().map(pluginRecordOf).filter(Boolean).map(record => record?.type)).toEqual([
+        'plugin:dsh-jev/decision-request',
+        'plugin:dsh-jev/decision-result',
+      ])
     } finally {
       await ctx.fiber.dispose()
     }
   })
+
 })
 
 async function boot(credentials: string[]): Promise<Context> {
@@ -253,21 +269,34 @@ function jevResponse(risk: number): Response {
   }), { headers: { 'content-type': 'application/json' } })
 }
 
-function routerJevResponse(route: 'deep'): Response {
+function decisionGuidanceResponse(): Response {
   return new Response(JSON.stringify({
     model: 'jev-1.14',
     answers: {
-      taskType: { type: 'choice', choice: 'analysis', confidence: 0.8, probabilities: { coding: 0.05, retrieval: 0.05, writing: 0.05, analysis: 0.8, operation: 0.05 } },
-      complexity: { type: 'choice', choice: 'high', confidence: 0.9, probabilities: { low: 0.03, medium: 0.07, high: 0.9 } },
-      needsLatestInformation: { type: 'noul', noul: 0.05 },
-      needsTools: { type: 'noul', noul: 0.2 },
-      needsDelegation: { type: 'noul', noul: 0.2 },
-      ambiguity: { type: 'choice', choice: 'low', confidence: 0.9, probabilities: { low: 0.9, medium: 0.08, high: 0.02 } },
-      risk: { type: 'choice', choice: 'low', confidence: 0.95, probabilities: { low: 0.95, medium: 0.04, high: 0.01 } },
-      route: { type: 'choice', choice: route, confidence: 0.9, probabilities: { fast: 0.03, standard: 0.05, deep: 0.9, 'ask-user': 0.02 } },
+      taskType: answer('analysis', { coding: 0.05, retrieval: 0.05, writing: 0.05, analysis: 0.8, operation: 0.05 }),
+      informationSufficient: { type: 'noul', noul: 0.8 },
+      recommendedAction: answer('inspect-context', {
+        continue: 0.02, 'ask-user': 0.03, 'inspect-context': 0.8, search: 0.03,
+        'use-tool': 0.04, 'change-direction': 0.03, answer: 0.03, stop: 0.02,
+      }),
+      focus: answer('verify-assumptions', {
+        'clarify-goal': 0.01, 'verify-assumptions': 0.8, 'inspect-local-context': 0.1,
+        'gather-external-evidence': 0.01, 'compare-options': 0.05, 'recover-tool': 0.01,
+        'synthesize-evidence': 0.01, 'answer-directly': 0.01,
+      }),
+      avoid: answer('unsupported-assumption', {
+        'unsupported-assumption': 0.8, 'broad-search': 0.05, 'repeat-failed-action': 0.05,
+        'premature-conclusion': 0.05, 'unnecessary-tool': 0.03, none: 0.02,
+      }),
+      risk: answer('medium', { low: 0.2, medium: 0.7, high: 0.1 }),
+      ambiguity: answer('low', { low: 0.8, medium: 0.15, high: 0.05 }),
     },
-    usage: { input_tokens: 30, output_tokens: 4 },
+    usage: { input_tokens: 30, output_tokens: 8 },
   }), { headers: { 'content-type': 'application/json' } })
+}
+
+function answer(choice: string, probabilities: Readonly<Record<string, number>>) {
+  return { type: 'choice', choice, confidence: probabilities[choice] ?? 0, probabilities }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
