@@ -58,6 +58,7 @@ describe('decision guidance local report', () => {
       model: 'jev-test',
       latencyMs: 12,
       usage: { inputTokens: 4, outputTokens: 2 },
+      minimumConfidence: 0.7,
       answers: {},
     })
     appendPluginRecord(session, 'plugin:dsh-jev/decision-advisory', {
@@ -112,7 +113,9 @@ describe('decision guidance local report', () => {
       requestSeq: failed,
       status: 'failure',
       code: 'DECISION_CANCELLED',
+      stage: 'cancellation',
       retryable: false,
+      responseReceived: false,
     })
     appendPluginRecord(mixed, 'plugin:dsh-jev/decision-request', request('advisory'))
     expect(createDecisionGuidanceReport(mixed)).toMatchObject({
@@ -151,7 +154,7 @@ function reportFixture(
 function request(mode: 'shadow' | 'advisory'): DecisionGuidanceRequestRecord {
   return {
     strategyVersion: 'jev-decision-guidance-v1',
-    questionVersion: 'decision-brief-v1',
+    questionVersion: 'decision-brief-v2',
     mode,
     turn: 1,
     step: 1,
@@ -182,7 +185,7 @@ function request(mode: 'shadow' | 'advisory'): DecisionGuidanceRequestRecord {
 
 function brief() {
   return {
-    version: 1 as const,
+    version: 2 as const,
     nodeType: 'task-intake' as const,
     taskType: 'analysis' as const,
     informationSufficient: true,

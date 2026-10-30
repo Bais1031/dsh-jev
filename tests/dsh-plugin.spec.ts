@@ -7,6 +7,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import DshDecisionService, { Config } from '../src/dsh-plugin.js'
+import { TYPERT_REMOTE } from '../src/remote.js'
 
 class TestCredentials extends Service {
   private readonly values: string[]
@@ -22,6 +23,16 @@ class TestCredentials extends Service {
   }
 }
 
+class PendingCredentials extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'credentials')
+  }
+
+  resolve(): Promise<never> {
+    return new Promise<never>(() => {})
+  }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -32,7 +43,7 @@ describe('DSH plugin integration', () => {
       'apiKeyEnv', 'endpoint', 'model', 'timeoutMs', 'maxInputBytes',
       'decisionMode', 'decisionNodes', 'decisionCooldownSteps', 'decisionMaxCallsPerSession',
       'decisionProgressCheckStep', 'decisionMinimumTaskInputCharacters', 'decisionMaxInputCharacters',
-      'decisionMaxOutputTokens', 'decisionMinimumConfidence',
+      'decisionDeadlineMs', 'decisionMaxOutputTokens', 'decisionMinimumConfidence',
       'decisionIncludeToolResultSummaries', 'decisionToolResultSummaryCharacters',
     ]
     expect(fields.map(field => [field, Config.dict?.[field]?.meta.volatile]))
@@ -51,6 +62,14 @@ describe('DSH plugin integration', () => {
       expect(remoteMethods(ctx.decisions).map(method => method.exportName)).toEqual([
         'testConnection',
         'latestSessionSummary',
+      ])
+      expect(ctx.decisions.typertRemote).toMatchObject({
+        serviceKey: 'decisions',
+        namespace: 'dshJev',
+      })
+      expect(TYPERT_REMOTE.descriptors.map(descriptor => [descriptor.method, descriptor.implementation])).toEqual([
+        ['testConnection', 'remoteTestConnection'],
+        ['latestSessionSummary', 'remoteLatestSessionSummary'],
       ])
       await expect(ctx.decisions.remoteTestConnection(new AbortController().signal)).resolves.toEqual({
         ok: true,
@@ -221,6 +240,46 @@ describe('DSH plugin integration', () => {
     }
   })
 
+  it('applies the automatic deadline to credential resolution and fails open', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt, {})
+    await ctx.plugin(ToolRuntime, {})
+    await ctx.plugin(PendingCredentials)
+    await ctx.plugin(DshDecisionService, {
+      decisionMode: 'shadow',
+      decisionNodes: ['task-intake'],
+      decisionCooldownSteps: 0,
+      decisionMinimumTaskInputCharacters: 1,
+      decisionDeadlineMs: 5,
+    })
+    const session = Session.create(SessionId('credential-deadline'))
+    const agent = { session } as Agent
+    const messages = [createUserMessage({
+      content: [{ type: 'text', text: 'Analyze this decision.' }],
+      source: { kind: 'user' },
+    })]
+    try {
+      const decision = await ctx.waterfall(
+        ctx as never,
+        'agent/pre-step',
+        { agent, messages, turn: 1, step: 1, signal: new AbortController().signal },
+        () => Promise.resolve({ kind: 'enter' as const, messages }),
+      )
+
+      expect(decision.kind === 'enter' && decision.messages).toHaveLength(1)
+      expect(session.snapshotEvents().map(pluginRecordOf).filter(Boolean).at(-1)).toMatchObject({
+        data: {
+          status: 'failure',
+          code: 'DECISION_GUIDANCE_DEADLINE_EXCEEDED',
+          stage: 'deadline',
+          responseReceived: false,
+        },
+      })
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
 })
 
 async function boot(credentials: string[]): Promise<Context> {
@@ -273,7 +332,6 @@ function decisionGuidanceResponse(): Response {
   return new Response(JSON.stringify({
     model: 'jev-1.14',
     answers: {
-      taskType: answer('analysis', { coding: 0.05, retrieval: 0.05, writing: 0.05, analysis: 0.8, operation: 0.05 }),
       informationSufficient: { type: 'noul', noul: 0.8 },
       recommendedAction: answer('inspect-context', {
         continue: 0.02, 'ask-user': 0.03, 'inspect-context': 0.8, search: 0.03,
@@ -284,11 +342,6 @@ function decisionGuidanceResponse(): Response {
         'gather-external-evidence': 0.01, 'compare-options': 0.05, 'recover-tool': 0.01,
         'synthesize-evidence': 0.01, 'answer-directly': 0.01,
       }),
-      avoid: answer('unsupported-assumption', {
-        'unsupported-assumption': 0.8, 'broad-search': 0.05, 'repeat-failed-action': 0.05,
-        'premature-conclusion': 0.05, 'unnecessary-tool': 0.03, none: 0.02,
-      }),
-      risk: answer('medium', { low: 0.2, medium: 0.7, high: 0.1 }),
       ambiguity: answer('low', { low: 0.8, medium: 0.15, high: 0.05 }),
     },
     usage: { input_tokens: 30, output_tokens: 8 },

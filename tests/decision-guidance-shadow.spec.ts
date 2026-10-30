@@ -49,7 +49,7 @@ describe('decision guidance Shadow integration', () => {
       type: 'plugin:dsh-jev/decision-request',
       data: {
         strategyVersion: 'jev-decision-guidance-v1',
-        questionVersion: 'decision-brief-v1',
+        questionVersion: 'decision-brief-v2',
         mode: 'shadow',
         nodeType: 'direction-selection',
         trigger: { reasons: ['multiple-direction-language'] },
@@ -156,19 +156,67 @@ describe('decision guidance Shadow integration', () => {
     await ctx.fiber.dispose()
   })
 
-  it('records output-limit rejection without changing the main route', async () => {
+  it('records a valid high-usage result without changing the main route', async () => {
     const ctx = new Context()
-    const session = Session.create(SessionId('shadow-output-limit'))
+    const session = Session.create(SessionId('shadow-high-usage'))
     const agent = { session } as Agent
     installDecisionGuidanceShadow(ctx, {
-      decide: async () => ({ ...result(), usage: { inputTokens: 10, outputTokens: 51 } }),
-    }, options('shadow', { maximumOutputTokens: 50 }))
+      decide: async () => ({ ...result(), usage: { inputTokens: 10, outputTokens: 5_000 } }),
+    }, options('shadow'))
 
     const decision = await propose(ctx, agent, 1, 1, 'Review this architecture carefully.')
     expect(await request(ctx, agent, 1, 1)).toBe(ACTUAL_ROUTE)
     expect(decision.kind === 'enter' && decision.messages).toHaveLength(1)
     expect(records(session).at(-1)).toMatchObject({
-      data: { status: 'failure', code: 'DECISION_GUIDANCE_OUTPUT_LIMIT_EXCEEDED', retryable: false },
+      data: { status: 'success', usage: { inputTokens: 10, outputTokens: 5_000 } },
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('stops waiting at the automatic deadline and continues with the unchanged route', async () => {
+    const ctx = new Context()
+    const session = Session.create(SessionId('shadow-deadline'))
+    const agent = { session } as Agent
+    installDecisionGuidanceShadow(ctx, {
+      decide: async () => await new Promise<DecisionResult>(() => {}),
+    }, options('shadow', { deadlineMs: 5 }))
+
+    const decision = await propose(ctx, agent, 1, 1, 'Diagnose this slow decision service.')
+
+    expect(decision.kind === 'enter' && decision.messages).toHaveLength(1)
+    expect(records(session).at(-1)).toMatchObject({
+      data: {
+        status: 'failure',
+        code: 'DECISION_GUIDANCE_DEADLINE_EXCEEDED',
+        stage: 'deadline',
+        retryable: true,
+        responseReceived: false,
+        latencyMs: expect.any(Number),
+      },
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('preserves provider usage and latency when brief projection fails', async () => {
+    const ctx = new Context()
+    const session = Session.create(SessionId('shadow-projection-failure'))
+    const agent = { session } as Agent
+    installDecisionGuidanceShadow(ctx, {
+      decide: async () => ({ ...result(), answers: {}, latencyMs: 17, usage: { inputTokens: 90, outputTokens: 40 } }),
+    }, options('shadow'))
+
+    await propose(ctx, agent, 1, 1, 'Analyze this invalid structured result.')
+
+    expect(records(session).at(-1)).toMatchObject({
+      data: {
+        status: 'failure',
+        code: 'DECISION_GUIDANCE_INVALID_RESULT',
+        stage: 'projection',
+        responseReceived: true,
+        model: 'jev-test',
+        latencyMs: 17,
+        usage: { inputTokens: 90, outputTokens: 40 },
+      },
     })
     await ctx.fiber.dispose()
   })
@@ -232,7 +280,7 @@ async function request(ctx: Context, agent: Agent, turn: number, step: number): 
 
 function options(mode: DecisionGuidanceMode, overrides: {
   readonly maximumInputCharacters?: number
-  readonly maximumOutputTokens?: number
+  readonly deadlineMs?: number
   readonly includeToolResultSummaries?: boolean
   readonly toolResultSummaryCharacters?: number
 } = {}) {
@@ -240,7 +288,7 @@ function options(mode: DecisionGuidanceMode, overrides: {
     mode: () => mode,
     model: () => 'jev-test',
     maximumInputCharacters: () => overrides.maximumInputCharacters ?? 6_000,
-    maximumOutputTokens: () => overrides.maximumOutputTokens ?? 250,
+    deadlineMs: () => overrides.deadlineMs ?? 3_000,
     minimumConfidence: () => 0.7,
     enabledNodes: () => [
       'task-intake', 'missing-information', 'direction-selection', 'tool-recovery', 'progress-check', 'pre-conclusion',

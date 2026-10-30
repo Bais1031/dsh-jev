@@ -9,7 +9,7 @@
 | 阶段 | 结果 | 主要证据 |
 | --- | --- | --- |
 | 8 范围收敛与迁移设计 | 通过 | 删除旧路由运行时与配置；旧记录名称与新决策记录隔离；迁移说明完成 |
-| 9 Jev 决策协议 | 通过 | 固定版本问题集、受限词汇、运行时校验、最多三个候选方向、输入与结果接纳上限 |
+| 9 Jev 决策协议 | 通过 | 固定版本问题集、受限词汇、运行时校验、最多三个候选方向、输入上限与独立简报投影 |
 | 10 关键节点触发器 | 通过 | 六类确定性节点、简单任务跳过、同一 turn/step 去重、冷却和在线 Agent Session 预算 |
 | 11 Decision Shadow | 通过 | 成对 Session 记录、安全失败、取消传播、原路线对象保持不变、Session 摘要 API |
 
@@ -22,10 +22,10 @@
 
 ## 阶段 9
 
-- `jev-decision-guidance-v1` 策略和 `decision-brief-v1` 问题集固定版本。
-- 协议只使用 Jev Boolean/Choice 输出，投影为任务类型、信息充分度、最多三个候选方向、下一动作、重点、避免项、风险、歧义和置信度。
-- 非法答案、未知词汇和超出接纳上限的结果转为结构化失败，不进入任何主模型输入。
-- 输入按 Unicode 字符截断。Jev API 当前没有生成 token 参数，因此 `decisionMaxOutputTokens` 是响应接纳上限；固定结构化问题限制响应内容，但该字段不承诺减少已经发生的上游计费。
+- `jev-decision-guidance-v1` 策略和 `decision-brief-v2` 节点问题集固定版本。
+- 协议只使用 Jev Boolean/Choice 输出。所有节点投影信息充分度、最多三个候选方向、下一动作、重点、歧义和置信度；恢复、进展与结论节点按需增加避免项或风险。
+- 非法答案和未知词汇转为结构化失败，不进入任何主模型输入；已经收到的有效结果不会因为 provider token usage 被丢弃。
+- 输入按 Unicode 字符截断。Provider usage 用于成本统计，与发送给主模型的固定词汇决策简报分别处理。
 
 ## 阶段 10
 
@@ -38,9 +38,10 @@
 
 - Shadow 在下游确定实际 `LlmCallConfig` 后运行，并返回同一个对象引用；Jev 结果不会进入主模型消息或配置。
 - 每次尝试先写 `plugin:dsh-jev/decision-request`，再写配对的 `plugin:dsh-jev/decision-result`。
-- Provider、协议和未知失败只记录安全结构化字段。API key、错误正文和原始上游响应不会进入失败记录。
+- Provider、协议和未知失败只记录安全结构化字段。API key、错误正文和原始上游响应不会进入失败记录；已经收到响应后的投影失败保留 provider、模型、usage 和延迟。
+- 自动增强使用独立的端到端短 deadline；达到时限后记录结构化失败并保持主模型请求不变。
 - Provider 失败继续使用原路线；用户取消会记录取消结果并继续向上传播取消，不会被 Shadow 吞掉。
-- `summarizeDecisionGuidance(session)` 汇总调用、成功、失败、未配对请求、Jev token、延迟和节点分布，不返回请求正文或答案。
+- `summarizeDecisionGuidance(session)` 分别汇总调用、Jev 响应、有效简报、实际注入、失败、未配对请求、Jev token、延迟和节点分布，不返回请求正文或答案。
 
 ## 自动化验收
 

@@ -37,7 +37,8 @@ const DEFAULT_DECISION_MAX_CALLS_PER_SESSION = 8
 const DEFAULT_DECISION_PROGRESS_CHECK_STEP = 4
 const DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS = 200
 const DEFAULT_DECISION_MAX_INPUT_CHARACTERS = 6_000
-const DEFAULT_DECISION_MAX_OUTPUT_TOKENS = 250
+const DEFAULT_DECISION_DEADLINE_MS = 3_000
+const LEGACY_DEFAULT_DECISION_MAX_OUTPUT_TOKENS = 250
 const DEFAULT_DECISION_MINIMUM_CONFIDENCE = 0.7
 const DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES = false
 const DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS = 1_000
@@ -57,6 +58,8 @@ export interface ConfigInput {
   readonly decisionProgressCheckStep?: number
   readonly decisionMinimumTaskInputCharacters?: number
   readonly decisionMaxInputCharacters?: number
+  readonly decisionDeadlineMs?: number
+  /** @deprecated Retained only so existing deployments continue to load. */
   readonly decisionMaxOutputTokens?: number
   readonly decisionMinimumConfidence?: number
   readonly decisionIncludeToolResultSummaries?: boolean
@@ -91,7 +94,9 @@ export interface Config {
   readonly decisionMinimumTaskInputCharacters?: Volatile<number>
   /** Maximum Unicode characters copied into one automatic decision request. */
   readonly decisionMaxInputCharacters?: Volatile<number>
-  /** Maximum provider-reported output tokens accepted as a valid brief. */
+  /** Maximum end-to-end milliseconds spent waiting for one automatic Jev decision. */
+  readonly decisionDeadlineMs?: Volatile<number>
+  /** @deprecated Provider output usage no longer decides whether a valid brief is accepted. */
   readonly decisionMaxOutputTokens?: Volatile<number>
   /** Minimum joint action/focus confidence accepted for later Advisory use. */
   readonly decisionMinimumConfidence?: Volatile<number>
@@ -129,7 +134,8 @@ export const Config: z<ConfigInput, Config> = z.object({
   decisionProgressCheckStep: z.natural().min(2).default(DEFAULT_DECISION_PROGRESS_CHECK_STEP).volatile(),
   decisionMinimumTaskInputCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS).volatile(),
   decisionMaxInputCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_MAX_INPUT_CHARACTERS).volatile(),
-  decisionMaxOutputTokens: z.natural().min(1).max(10_000).default(DEFAULT_DECISION_MAX_OUTPUT_TOKENS).volatile(),
+  decisionDeadlineMs: z.natural().min(1).max(120_000).default(DEFAULT_DECISION_DEADLINE_MS).volatile(),
+  decisionMaxOutputTokens: z.natural().min(1).max(10_000).default(LEGACY_DEFAULT_DECISION_MAX_OUTPUT_TOKENS).volatile(),
   decisionMinimumConfidence: z.number().min(0).max(1).default(DEFAULT_DECISION_MINIMUM_CONFIDENCE).volatile(),
   decisionIncludeToolResultSummaries: z.boolean().default(DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES).volatile(),
   decisionToolResultSummaryCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS).volatile(),
@@ -151,7 +157,7 @@ export class DshDecisionService extends TypertRemoteService {
    * @param config - Endpoint, model, credential reference, and request limits.
    */
   constructor(ctx: Context, config: Config = {}) {
-    super(ctx, 'decisions')
+    super(ctx, 'decisions', { namespace: 'dshJev' })
     const providerName = decisionProviderName(config.providerName ?? DEFAULT_PROVIDER)
     this.decisions = new DecisionService({ defaultProvider: providerName })
     const provider = new JevDecisionProvider({
@@ -162,9 +168,10 @@ export class DshDecisionService extends TypertRemoteService {
         timeoutMs: config.timeoutMs?.get() ?? DEFAULT_TIMEOUT_MS,
         maxInputBytes: config.maxInputBytes?.get() ?? DEFAULT_MAX_INPUT_BYTES,
       }),
-      resolveApiKey: async () => {
+      resolveApiKey: async (signal) => {
         const apiKeyRef = credentialRef(config.apiKeyEnv?.get() ?? DEFAULT_API_KEY_REF)
-        return (await ctx.credentials.resolve(apiKeyRef))?.value
+        const resolved = await settleBeforeAbort(ctx.credentials.resolve(apiKeyRef), signal)
+        return resolved?.value
       },
     })
 
@@ -185,7 +192,7 @@ export class DshDecisionService extends TypertRemoteService {
       progressCheckStep: () => config.decisionProgressCheckStep?.get() ?? DEFAULT_DECISION_PROGRESS_CHECK_STEP,
       minimumTaskInputCharacters: () => config.decisionMinimumTaskInputCharacters?.get() ?? DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS,
       maximumInputCharacters: () => config.decisionMaxInputCharacters?.get() ?? DEFAULT_DECISION_MAX_INPUT_CHARACTERS,
-      maximumOutputTokens: () => config.decisionMaxOutputTokens?.get() ?? DEFAULT_DECISION_MAX_OUTPUT_TOKENS,
+      deadlineMs: () => config.decisionDeadlineMs?.get() ?? DEFAULT_DECISION_DEADLINE_MS,
       minimumConfidence: () => config.decisionMinimumConfidence?.get() ?? DEFAULT_DECISION_MINIMUM_CONFIDENCE,
       includeToolResultSummaries: () => config.decisionIncludeToolResultSummaries?.get() ?? DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES,
       toolResultSummaryCharacters: () => config.decisionToolResultSummaryCharacters?.get() ?? DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS,
@@ -232,6 +239,9 @@ export class DshDecisionService extends TypertRemoteService {
     return Promise.resolve({
       sessionId: this.latestSession.id,
       calls: summary.calls,
+      providerSuccesses: summary.providerSuccesses,
+      validBriefs: summary.validBriefs,
+      injectedAdvisories: summary.injectedAdvisories,
       successes: summary.successes,
       failures: summary.failures,
       pending: summary.pending,
@@ -239,6 +249,8 @@ export class DshDecisionService extends TypertRemoteService {
       outputTokens: summary.usage.outputTokens,
       totalTokens: summary.usage.totalTokens,
       totalLatencyMs: summary.totalLatencyMs,
+      latestCall: summary.latestCall,
+      latestFailure: summary.latestFailure,
     })
   }
 
@@ -324,6 +336,29 @@ function markRemoteMethod<Args extends unknown[], Result>(
   })
   const receiver = Object.create(prototype) as DshDecisionService
   for (const initializer of initializers) initializer.call(receiver)
+}
+
+/**
+ * Stop waiting for a dependency that does not accept an AbortSignal while leaving its eventual settlement observed.
+ * @param operation - In-flight dependency work.
+ * @param signal - Optional caller or lifecycle cancellation.
+ * @returns The dependency result when it settles before cancellation.
+ */
+async function settleBeforeAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return await operation
+  signal.throwIfAborted()
+  return await new Promise<T>((resolve, reject) => {
+    const aborted = (): void => {
+      cleanup()
+      reject(signal.reason)
+    }
+    const cleanup = (): void => { signal.removeEventListener('abort', aborted) }
+    signal.addEventListener('abort', aborted, { once: true })
+    operation.then(
+      (value) => { cleanup(); resolve(value) },
+      (error: unknown) => { cleanup(); reject(error) },
+    )
+  })
 }
 
 export default DshDecisionService

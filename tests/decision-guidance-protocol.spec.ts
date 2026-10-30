@@ -8,31 +8,37 @@ import {
 
 describe('decision guidance protocol', () => {
   it('builds one fixed bounded question vocabulary', () => {
-    const request = createDecisionGuidanceRequest({ content: 'diagnose this' }, 'jev-test')
+    const request = createDecisionGuidanceRequest('task-intake', { content: 'diagnose this' }, 'jev-test')
     expect(request.model).toBe('jev-test')
     expect(Object.keys(request.questions)).toEqual([
-      'taskType',
       'informationSufficient',
       'recommendedAction',
       'focus',
-      'avoid',
-      'risk',
       'ambiguity',
     ])
-    expect(DECISION_GUIDANCE_QUESTION_VERSION).toBe('decision-brief-v1')
+    expect(DECISION_GUIDANCE_QUESTION_VERSION).toBe('decision-brief-v2')
+  })
+
+  it('adds only the questions needed by later analysis nodes', () => {
+    expect(Object.keys(createDecisionGuidanceRequest('progress-check', {}, 'jev-test').questions)).toEqual([
+      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'avoid',
+    ])
+    expect(Object.keys(createDecisionGuidanceRequest('tool-recovery', {}, 'jev-test').questions)).toEqual([
+      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'avoid', 'risk',
+    ])
+    expect(Object.keys(createDecisionGuidanceRequest('pre-conclusion', {}, 'jev-test').questions)).toEqual([
+      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'risk',
+    ])
   })
 
   it('projects probabilities into a short ranked brief', () => {
-    const brief = createDecisionBrief('direction-selection', result(), 0.7, 100)
+    const brief = createDecisionBrief('direction-selection', result(), 0.7)
     expect(brief).toMatchObject({
-      version: 1,
+      version: 2,
       nodeType: 'direction-selection',
-      taskType: 'coding',
       informationSufficient: true,
       recommendedAction: 'inspect-context',
       focus: 'verify-assumptions',
-      avoid: 'unsupported-assumption',
-      riskLevel: 'medium',
       ambiguity: 'low',
       confidence: 0.8,
       accepted: true,
@@ -49,28 +55,25 @@ describe('decision guidance protocol', () => {
     const low = result({
       recommendedAction: choice('inspect-context', ACTION_PROBABILITIES, 0.6),
     })
-    expect(createDecisionBrief('task-intake', low, 0.7, 100)).toMatchObject({
+    expect(createDecisionBrief('task-intake', low, 0.7)).toMatchObject({
       confidence: 0.6,
       accepted: false,
       reasons: ['confidence-below-threshold'],
     })
   })
 
-  it('rejects provider-reported output above the configured acceptance limit', () => {
-    expect(() => createDecisionBrief('task-intake', {
+  it('accepts a valid result independently of provider-reported output usage', () => {
+    expect(createDecisionBrief('task-intake', {
       ...result(),
-      usage: { inputTokens: 10, outputTokens: 101 },
-    }, 0.7, 100)).toThrow(expect.objectContaining({
-      code: 'DECISION_GUIDANCE_OUTPUT_LIMIT_EXCEEDED',
-      retryable: false,
-    }))
+      usage: { inputTokens: 10, outputTokens: 10_000 },
+    }, 0.7)).toMatchObject({ accepted: true })
   })
 
   it('rejects an answer set outside the fixed protocol vocabulary', () => {
     const invalid = result({
-      taskType: choice('unknown', { unknown: 1 }, 1),
+      recommendedAction: choice('unknown', { unknown: 1 }, 1),
     })
-    expect(() => createDecisionBrief('task-intake', invalid, 0.7, 100)).toThrow(expect.objectContaining({
+    expect(() => createDecisionBrief('task-intake', invalid, 0.7)).toThrow(expect.objectContaining({
       code: 'DECISION_GUIDANCE_INVALID_RESULT',
     }))
   })

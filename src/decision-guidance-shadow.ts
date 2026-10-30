@@ -67,6 +67,7 @@ export interface DecisionGuidanceSuccessRecord {
   readonly model: string
   readonly latencyMs: number
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number }
+  readonly minimumConfidence: number
   readonly answers: Readonly<Record<string, DecisionAnswer>>
 }
 
@@ -75,11 +76,23 @@ export interface DecisionGuidanceFailureRecord {
   readonly requestSeq: SessionSeq
   readonly status: 'failure'
   readonly code: string
+  readonly stage: DecisionGuidanceFailureStage
   readonly retryable: boolean
+  readonly responseReceived: boolean
   readonly provider?: string
   readonly providerCode?: string
+  readonly model?: string
   readonly latencyMs?: number
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number }
 }
+
+/** Operation stage that owns one automatic-guidance failure. */
+export type DecisionGuidanceFailureStage =
+  | 'provider'
+  | 'deadline'
+  | 'cancellation'
+  | 'projection'
+  | 'unexpected'
 
 /** Durable outcome of one decision-guidance analysis. */
 export type DecisionGuidanceResultRecord = DecisionGuidanceSuccessRecord | DecisionGuidanceFailureRecord
@@ -117,7 +130,7 @@ export interface DecisionGuidanceShadowOptions extends DecisionTriggerOptions {
   readonly mode: () => DecisionGuidanceMode
   readonly model: () => string
   readonly maximumInputCharacters: () => number
-  readonly maximumOutputTokens: () => number
+  readonly deadlineMs: () => number
   readonly minimumConfidence: () => number
 }
 
@@ -200,7 +213,7 @@ async function evaluateDecision(
   signal: AbortSignal,
 ): Promise<SuccessfulEvaluation | undefined> {
   const input = boundedInput(trigger, messages.length, options.maximumInputCharacters())
-  const request = createDecisionGuidanceRequest(input.state, options.model())
+  const request = createDecisionGuidanceRequest(trigger.nodeType, input.state, options.model())
   const requestSeq = appendPluginRecord(session, 'plugin:dsh-jev/decision-request', {
     strategyVersion: DECISION_GUIDANCE_STRATEGY_VERSION,
     questionVersion: DECISION_GUIDANCE_QUESTION_VERSION,
@@ -214,13 +227,23 @@ async function evaluateDecision(
   })
 
   try {
-    const result = await decisions.decide(request, { signal })
-    const brief = createDecisionBrief(
-      trigger.nodeType,
-      result,
-      options.minimumConfidence(),
-      options.maximumOutputTokens(),
-    )
+    const result = await decideBeforeDeadline(decisions, request, signal, options.deadlineMs())
+    const minimumConfidence = options.minimumConfidence()
+    let brief: JevDecisionBrief
+    try {
+      brief = createDecisionBrief(
+        trigger.nodeType,
+        result,
+        minimumConfidence,
+      )
+    } catch (error: unknown) {
+      appendPluginRecord(
+        session,
+        'plugin:dsh-jev/decision-result',
+        failureRecord(requestSeq, error, 'projection', result),
+      )
+      return undefined
+    }
     const resultSeq = appendPluginRecord(session, 'plugin:dsh-jev/decision-result', {
       requestSeq,
       status: 'success',
@@ -229,12 +252,88 @@ async function evaluateDecision(
       model: result.model,
       latencyMs: result.latencyMs,
       usage: result.usage,
+      minimumConfidence,
       answers: result.answers,
     })
     return { requestSeq, resultSeq, brief }
   } catch (error: unknown) {
-    appendPluginRecord(session, 'plugin:dsh-jev/decision-result', failureRecord(requestSeq, error))
+    appendPluginRecord(session, 'plugin:dsh-jev/decision-result', failureRecord(
+      requestSeq,
+      error,
+      failureStage(error),
+    ))
     return undefined
+  }
+}
+
+class DecisionGuidanceDeadlineError extends Error {
+  readonly code = 'DECISION_GUIDANCE_DEADLINE_EXCEEDED'
+  readonly retryable = true
+
+  /** @param latencyMs - Time elapsed before automatic guidance stopped waiting. */
+  constructor(readonly latencyMs: number) {
+    super('Automatic Jev guidance exceeded its deadline')
+    this.name = 'DecisionGuidanceDeadlineError'
+  }
+}
+
+/**
+ * Wait for one auxiliary decision only until the caller cancels or the configured deadline expires.
+ * The deadline aborts cooperative provider work; the race also guarantees fail-open progress when a provider ignores cancellation.
+ *
+ * @param decisions - Structured decision service.
+ * @param request - Exact automatic-guidance request.
+ * @param signal - Agent turn cancellation.
+ * @param deadlineMs - Maximum end-to-end wait for the auxiliary decision.
+ * @returns The provider result received before the deadline.
+ */
+async function decideBeforeDeadline(
+  decisions: DecisionGuidanceService,
+  request: DecisionRequest,
+  signal: AbortSignal,
+  deadlineMs: number,
+): Promise<DecisionResult> {
+  const startedAt = performance.now()
+  const deadline = new AbortController()
+  const combined = AbortSignal.any([signal, deadline.signal])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let removeCancellation = (): void => {}
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new DecisionGuidanceDeadlineError(Math.max(0, performance.now() - startedAt))
+      deadline.abort(error)
+      reject(error)
+    }, deadlineMs)
+  })
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    const cancel = (): void => {
+      reject(new DecisionError('DECISION_CANCELLED', 'Decision request was cancelled by the caller', {
+        retryable: false,
+        latencyMs: Math.max(0, performance.now() - startedAt),
+        cause: signal.reason,
+      }))
+    }
+    if (signal.aborted) cancel()
+    else {
+      signal.addEventListener('abort', cancel, { once: true })
+      removeCancellation = () => { signal.removeEventListener('abort', cancel) }
+    }
+  })
+  try {
+    return await Promise.race([
+      decisions.decide(request, { signal: combined }),
+      timeout,
+      cancellation,
+    ])
+  } catch (error: unknown) {
+    if (deadline.signal.aborted && !signal.aborted) {
+      const reason = deadline.signal.reason
+      if (reason instanceof DecisionGuidanceDeadlineError) throw reason
+    }
+    throw error
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    removeCancellation()
   }
 }
 
@@ -248,15 +347,17 @@ export function renderDecisionAdvisory(brief: JevDecisionBrief): string {
     .map(direction => `${direction.focus} (${formatProbability(direction.probability)})`)
     .join(', ')
   return [
-    '<jev-decision-advisory version="1">',
+    '<jev-decision-advisory version="2">',
     'Non-authoritative analysis guidance. Independently verify it against the user request and available evidence.',
     `Node: ${brief.nodeType}`,
     `Information sufficient: ${String(brief.informationSufficient)} (${formatProbability(brief.informationSufficientProbability)})`,
     `Recommended next analytical action: ${brief.recommendedAction}`,
     `Candidate directions: ${directions}`,
     `Primary focus: ${brief.focus}`,
-    `Avoid: ${brief.avoid}`,
-    `Risk: ${brief.riskLevel}; ambiguity: ${brief.ambiguity}; confidence: ${formatProbability(brief.confidence)}`,
+    ...brief.avoid === undefined ? [] : [`Avoid: ${brief.avoid}`],
+    ...brief.riskLevel === undefined
+      ? [`Ambiguity: ${brief.ambiguity}; confidence: ${formatProbability(brief.confidence)}`]
+      : [`Risk: ${brief.riskLevel}; ambiguity: ${brief.ambiguity}; confidence: ${formatProbability(brief.confidence)}`],
     'This guidance is not evidence and grants no permission to use tools or perform external actions. You may accept, adapt, or reject it.',
     '</jev-decision-advisory>',
   ].join('\n')
@@ -311,20 +412,58 @@ function takeCharacters(value: string, limit: number): string {
   return Array.from(value).slice(0, limit).join('')
 }
 
-function failureRecord(requestSeq: SessionSeq, error: unknown): DecisionGuidanceFailureRecord {
+function failureRecord(
+  requestSeq: SessionSeq,
+  error: unknown,
+  stage: DecisionGuidanceFailureStage,
+  result?: DecisionResult,
+): DecisionGuidanceFailureRecord {
+  const observed = result === undefined ? { responseReceived: false as const } : {
+    responseReceived: true as const,
+    provider: result.provider,
+    model: result.model,
+    latencyMs: result.latencyMs,
+    usage: result.usage,
+  }
   if (error instanceof DecisionError) {
     return {
       requestSeq,
       status: 'failure',
       code: error.code,
+      stage,
       retryable: error.retryable,
+      responseReceived: false,
       ...error.provider === undefined ? {} : { provider: error.provider },
       ...error.providerCode === undefined ? {} : { providerCode: error.providerCode },
       ...error.latencyMs === undefined ? {} : { latencyMs: error.latencyMs },
     }
   }
-  if (error instanceof DecisionGuidanceProtocolError) {
-    return { requestSeq, status: 'failure', code: error.code, retryable: error.retryable }
+  if (error instanceof DecisionGuidanceDeadlineError) {
+    return {
+      requestSeq,
+      status: 'failure',
+      code: error.code,
+      stage: 'deadline',
+      retryable: error.retryable,
+      responseReceived: false,
+      latencyMs: error.latencyMs,
+    }
   }
-  return { requestSeq, status: 'failure', code: 'DECISION_GUIDANCE_UNEXPECTED_FAILURE', retryable: false }
+  if (error instanceof DecisionGuidanceProtocolError) {
+    return { requestSeq, status: 'failure', code: error.code, stage, retryable: error.retryable, ...observed }
+  }
+  return {
+    requestSeq,
+    status: 'failure',
+    code: 'DECISION_GUIDANCE_UNEXPECTED_FAILURE',
+    stage,
+    retryable: false,
+    ...observed,
+  }
+}
+
+function failureStage(error: unknown): DecisionGuidanceFailureStage {
+  if (error instanceof DecisionGuidanceDeadlineError) return 'deadline'
+  if (error instanceof DecisionError) return error.code === 'DECISION_CANCELLED' ? 'cancellation' : 'provider'
+  return 'unexpected'
 }

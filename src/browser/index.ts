@@ -29,36 +29,44 @@ export const inject = ['slots', 'locale', 'remote', 'remote.credentials', 'confi
  */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const unmountRemote = await ctx.remote.$mount(dshJevRemote)
+  let ui: ReturnType<ClientContext['inject']> | undefined
   try {
-    ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-jev: settings dictionaries')
-    const controller = new DshJevConfigCardController(ctx.configForms.get(DSH_JEV_NAMESPACE), {
-      describe: async refs => await ctx.remote.credentials.describe(refs),
-      set: async (ref, value) => await ctx.remote.credentials.set(ref, value),
-    }, {
-      testConnection: async () => {
-        const result = await ctx.remote.dshJev.testConnection()
-        if (!result.ok) return { ok: false, code: result.error.code, retryable: false }
-        return result.value
-      },
-      latestSessionSummary: async () => {
-        const result = await ctx.remote.dshJev.latestSessionSummary()
-        if (!result.ok) throw result.error
-        return result.value
-      },
+    ui = ctx.inject([...inject, 'remote.dshJev'], (remoteCtx) => {
+      remoteCtx.effect(() => remoteCtx.locale.register(NS, { zh, en }), 'dsh-jev: settings dictionaries')
+      const controller = new DshJevConfigCardController(remoteCtx.configForms.get(DSH_JEV_NAMESPACE), {
+        describe: async refs => await remoteCtx.remote.credentials.describe(refs),
+        set: async (ref, value) => await remoteCtx.remote.credentials.set(ref, value),
+      }, {
+        testConnection: async () => {
+          const result = await remoteCtx.remote.dshJev.testConnection()
+          if (!result.ok) return { ok: false, code: result.error.code, retryable: false }
+          return result.value
+        },
+        latestSessionSummary: async () => {
+          const result = await remoteCtx.remote.dshJev.latestSessionSummary()
+          if (!result.ok) throw result.error
+          return result.value
+        },
+      })
+      remoteCtx.effect(() => () => { controller.dispose() }, 'dsh-jev: settings form')
+      remoteCtx.effect(
+        () => remoteCtx.remote.$on('credentials/reference-updated', (ref: string) => { controller.refreshCredential(ref) }),
+        'dsh-jev: credential invalidations',
+      )
+      remoteCtx.effect(() => remoteCtx.slots.inject('plugins.row.config', () => remoteCtx.slots.register({
+        name: 'plugins.row.config',
+        key: 'dsh-jev#dsh-jev',
+        locale: NS,
+        inject: () => controller.inject(),
+      }, DshJevConfigCard)), 'dsh-jev: row configuration')
     })
-    ctx.effect(() => () => { controller.dispose() }, 'dsh-jev: settings form')
-    ctx.effect(
-      () => ctx.remote.$on('credentials/reference-updated', (ref: string) => { controller.refreshCredential(ref) }),
-      'dsh-jev: credential invalidations',
-    )
-    ctx.effect(() => ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-      name: 'plugins.row.config',
-      key: 'dsh-jev#dsh-jev',
-      locale: NS,
-      inject: () => controller.inject(),
-    }, DshJevConfigCard)), 'dsh-jev: row configuration')
-    return unmountRemote
+    await ui
+    return async () => {
+      await ui?.dispose()
+      await unmountRemote()
+    }
   } catch (error: unknown) {
+    await ui?.dispose()
     await unmountRemote()
     throw error
   }

@@ -12,8 +12,8 @@ import type { JevContent } from './types.js'
 
 /** Stable interpretation rules for one decision-guidance result. */
 export const DECISION_GUIDANCE_STRATEGY_VERSION = 'jev-decision-guidance-v1'
-/** Stable Jev question set used by the first decision-guidance protocol. */
-export const DECISION_GUIDANCE_QUESTION_VERSION = 'decision-brief-v1'
+/** Stable node-specific question sets used by the current decision-guidance protocol. */
+export const DECISION_GUIDANCE_QUESTION_VERSION = 'decision-brief-v2'
 
 /** Agent analysis point that caused one Jev evaluation. */
 export type DecisionNodeType =
@@ -24,7 +24,7 @@ export type DecisionNodeType =
   | 'progress-check'
   | 'pre-conclusion'
 
-/** Broad task class used to interpret the recommended action. */
+/** Broad task class retained when reading version-one briefs. */
 export type DecisionTaskType = 'coding' | 'retrieval' | 'writing' | 'analysis' | 'operation'
 
 /** Next analytical action recommended to the main model. */
@@ -69,18 +69,18 @@ export interface DecisionDirection {
   readonly probability: number
 }
 
-/** Short structured advice derived from the fixed Jev question set. */
+/** Short structured advice derived from the question set selected for one analysis node. */
 export interface JevDecisionBrief {
-  readonly version: 1
+  readonly version: 2
   readonly nodeType: DecisionNodeType
-  readonly taskType: DecisionTaskType
+  readonly taskType?: DecisionTaskType
   readonly informationSufficient: boolean
   readonly informationSufficientProbability: number
   readonly candidateDirections: readonly DecisionDirection[]
   readonly recommendedAction: DecisionRecommendedAction
   readonly focus: DecisionFocus
-  readonly avoid: DecisionAvoid
-  readonly riskLevel: DecisionRisk
+  readonly avoid?: DecisionAvoid
+  readonly riskLevel?: DecisionRisk
   readonly ambiguity: DecisionAmbiguity
   readonly confidence: number
   readonly accepted: boolean
@@ -93,7 +93,6 @@ export type DecisionBriefRejectionReason = 'confidence-below-threshold'
 /** Stable protocol failure identities that do not require message parsing. */
 export type DecisionGuidanceProtocolErrorCode =
   | 'DECISION_GUIDANCE_INVALID_RESULT'
-  | 'DECISION_GUIDANCE_OUTPUT_LIMIT_EXCEEDED'
 
 /** Expected failure while validating or projecting a provider result. */
 export class DecisionGuidanceProtocolError extends Error {
@@ -113,12 +112,17 @@ export class DecisionGuidanceProtocolError extends Error {
 
 /**
  * Build the exact versioned question set for one analysis node.
+ * @param nodeType - Analysis point that selects the smallest sufficient question set.
  * @param state - Bounded, secret-free state assembled by the trigger engine.
  * @param model - Jev model selected by live plugin configuration.
  * @returns A provider-independent request with fixed answer vocabularies.
  */
-export function createDecisionGuidanceRequest(state: JevContent, model: string): DecisionRequest {
-  return { state, model, questions: DECISION_GUIDANCE_QUESTIONS }
+export function createDecisionGuidanceRequest(
+  nodeType: DecisionNodeType,
+  state: JevContent,
+  model: string,
+): DecisionRequest {
+  return { state, model, questions: questionsForNode(nodeType) }
 }
 
 /**
@@ -126,42 +130,31 @@ export function createDecisionGuidanceRequest(state: JevContent, model: string):
  * @param nodeType - Analysis point represented by the result.
  * @param result - Provider result for {@link createDecisionGuidanceRequest}.
  * @param minimumConfidence - Minimum joint confidence for future model injection.
- * @param maximumOutputTokens - Maximum provider-reported output accepted by the plugin.
  * @returns A brief containing fixed vocabulary and at most three candidate directions.
  */
 export function createDecisionBrief(
   nodeType: DecisionNodeType,
   result: DecisionResult,
   minimumConfidence: number,
-  maximumOutputTokens: number,
 ): JevDecisionBrief {
-  if (result.usage.outputTokens > maximumOutputTokens) {
-    throw new DecisionGuidanceProtocolError(
-      'DECISION_GUIDANCE_OUTPUT_LIMIT_EXCEEDED',
-      `Jev reported ${String(result.usage.outputTokens)} output tokens, above the configured ${String(maximumOutputTokens)}-token acceptance limit`,
-    )
-  }
-
-  const taskType = choice(result.answers, 'taskType', TASK_TYPES)
   const informationSufficient = boolean(result.answers, 'informationSufficient')
   const action = choice(result.answers, 'recommendedAction', RECOMMENDED_ACTIONS)
   const focus = choice(result.answers, 'focus', FOCUS_OPTIONS)
-  const avoid = choice(result.answers, 'avoid', AVOID_OPTIONS)
-  const risk = choice(result.answers, 'risk', RISK_OPTIONS)
   const ambiguity = choice(result.answers, 'ambiguity', AMBIGUITY_OPTIONS)
+  const avoid = includesAvoid(nodeType) ? choice(result.answers, 'avoid', AVOID_OPTIONS) : undefined
+  const risk = includesRisk(nodeType) ? choice(result.answers, 'risk', RISK_OPTIONS) : undefined
   const confidence = Math.min(action.confidence, focus.confidence)
   const accepted = confidence >= minimumConfidence
   return {
-    version: 1,
+    version: 2,
     nodeType,
-    taskType: taskType.value,
     informationSufficient: informationSufficient.value,
     informationSufficientProbability: informationSufficient.probability,
     candidateDirections: rankedDirections(focus.probabilities),
     recommendedAction: action.value,
     focus: focus.value,
-    avoid: avoid.value,
-    riskLevel: risk.value,
+    ...avoid === undefined ? {} : { avoid: avoid.value },
+    ...risk === undefined ? {} : { riskLevel: risk.value },
     ambiguity: ambiguity.value,
     confidence,
     accepted,
@@ -169,7 +162,6 @@ export function createDecisionBrief(
   }
 }
 
-const TASK_TYPES = ['coding', 'retrieval', 'writing', 'analysis', 'operation'] as const
 const RECOMMENDED_ACTIONS = [
   'continue', 'ask-user', 'inspect-context', 'search', 'use-tool', 'change-direction', 'answer', 'stop',
 ] as const
@@ -183,18 +175,7 @@ const AVOID_OPTIONS = [
 const RISK_OPTIONS = ['low', 'medium', 'high'] as const
 const AMBIGUITY_OPTIONS = ['low', 'medium', 'high'] as const
 
-const DECISION_GUIDANCE_QUESTIONS = {
-  taskType: {
-    type: 'choice',
-    instructions: 'Classify the primary work requested by the user.',
-    options: {
-      coding: 'Implement, debug, review, or explain software.',
-      retrieval: 'Find or verify external information.',
-      writing: 'Draft, edit, translate, or summarize prose.',
-      analysis: 'Reason over supplied information without changing external state.',
-      operation: 'Change external state, publish, purchase, delete, or manage access.',
-    },
-  },
+const CORE_QUESTIONS = {
   informationSufficient: {
     type: 'boolean',
     instructions: 'Is the available information sufficient for the next reliable analytical action?',
@@ -227,6 +208,18 @@ const DECISION_GUIDANCE_QUESTIONS = {
       'answer-directly': 'Respond without further exploration.',
     },
   },
+  ambiguity: {
+    type: 'choice',
+    instructions: 'Classify unresolved ambiguity that can change the correct next action.',
+    options: {
+      low: 'The next action is clear.',
+      medium: 'A reversible default can continue.',
+      high: 'The user must clarify before reliable progress.',
+    },
+  },
+} satisfies Readonly<Record<string, DecisionQuestion>>
+
+const AVOID_QUESTION = {
   avoid: {
     type: 'choice',
     instructions: 'Choose the most important failure pattern to avoid in the next step.',
@@ -239,6 +232,9 @@ const DECISION_GUIDANCE_QUESTIONS = {
       none: 'No specific failure pattern dominates the next step.',
     },
   },
+} satisfies Readonly<Record<string, DecisionQuestion>>
+
+const RISK_QUESTION = {
   risk: {
     type: 'choice',
     instructions: 'Classify the harm caused by an incorrect next analytical action.',
@@ -248,16 +244,32 @@ const DECISION_GUIDANCE_QUESTIONS = {
       high: 'Deletion, payment, publication, credentials, permissions, legal, medical, or other high stakes.',
     },
   },
-  ambiguity: {
-    type: 'choice',
-    instructions: 'Classify unresolved ambiguity that can change the correct next action.',
-    options: {
-      low: 'The next action is clear.',
-      medium: 'A reversible default can continue.',
-      high: 'The user must clarify before reliable progress.',
-    },
-  },
 } satisfies Readonly<Record<string, DecisionQuestion>>
+
+function questionsForNode(nodeType: DecisionNodeType): Readonly<Record<string, DecisionQuestion>> {
+  switch (nodeType) {
+    case 'task-intake':
+    case 'missing-information':
+    case 'direction-selection':
+      return CORE_QUESTIONS
+    case 'progress-check':
+      return { ...CORE_QUESTIONS, ...AVOID_QUESTION }
+    case 'tool-recovery':
+      return { ...CORE_QUESTIONS, ...AVOID_QUESTION, ...RISK_QUESTION }
+    case 'pre-conclusion':
+      return { ...CORE_QUESTIONS, ...RISK_QUESTION }
+    default:
+      return assertNever(nodeType)
+  }
+}
+
+function includesAvoid(nodeType: DecisionNodeType): boolean {
+  return nodeType === 'tool-recovery' || nodeType === 'progress-check'
+}
+
+function includesRisk(nodeType: DecisionNodeType): boolean {
+  return nodeType === 'tool-recovery' || nodeType === 'pre-conclusion'
+}
 
 function boolean(answers: Readonly<Record<string, DecisionAnswer>>, name: string): DecisionBooleanAnswer {
   const answer = answers[name]
@@ -294,6 +306,10 @@ function isProbability(value: number | undefined): value is number {
 function invalidResult(): never {
   throw new DecisionGuidanceProtocolError(
     'DECISION_GUIDANCE_INVALID_RESULT',
-    'Jev returned a result that does not match decision-brief-v1',
+    'Jev returned a result that does not match decision-brief-v2',
   )
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported decision node: ${String(value)}`)
 }

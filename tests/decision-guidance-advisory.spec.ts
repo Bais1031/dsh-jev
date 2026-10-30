@@ -64,7 +64,6 @@ describe('decision guidance Advisory integration', () => {
   it.each([
     ['low confidence', async () => lowConfidenceResult(), 'success'],
     ['invalid result', async () => ({ ...result(), answers: {} }), 'failure'],
-    ['output limit', async () => ({ ...result(), usage: { inputTokens: 10, outputTokens: 251 } }), 'failure'],
     ['provider timeout', async () => {
       throw new DecisionError('DECISION_PROVIDER_FAILURE', 'private timeout detail', {
         retryable: true,
@@ -86,6 +85,23 @@ describe('decision guidance Advisory integration', () => {
     })
     expect(records(session).some(record => record.type === 'plugin:dsh-jev/decision-advisory')).toBe(false)
     expect(JSON.stringify(records(session))).not.toContain('private timeout detail')
+    await ctx.fiber.dispose()
+  })
+
+  it('injects a valid brief even when Jev reports high output usage', async () => {
+    const ctx = new Context()
+    const session = Session.create(SessionId('advisory-high-usage'))
+    const agent = { session } as Agent
+    installDecisionGuidanceShadow(ctx, {
+      decide: async () => ({ ...result(), usage: { inputTokens: 500, outputTokens: 1_500 } }),
+    }, options('advisory'))
+
+    const decision = await propose(ctx, agent, 1, 1, 'Analyze this architecture.')
+
+    expect(decision.kind === 'enter' && decision.messages).toHaveLength(2)
+    expect(records(session)[1]).toMatchObject({
+      data: { status: 'success', usage: { inputTokens: 500, outputTokens: 1_500 } },
+    })
     await ctx.fiber.dispose()
   })
 
@@ -118,7 +134,7 @@ describe('decision guidance Advisory integration', () => {
 
   it('renders only fixed protocol values and bounded decimal probabilities', () => {
     const text = renderDecisionAdvisory({
-      version: 1,
+      version: 2,
       nodeType: 'progress-check',
       taskType: 'analysis',
       informationSufficient: false,
@@ -161,7 +177,7 @@ function options(mode: DecisionGuidanceMode) {
     mode: () => mode,
     model: () => 'jev-test',
     maximumInputCharacters: () => 6_000,
-    maximumOutputTokens: () => 250,
+    deadlineMs: () => 3_000,
     minimumConfidence: () => 0.7,
     enabledNodes: () => [
       'task-intake', 'missing-information', 'direction-selection', 'tool-recovery', 'progress-check', 'pre-conclusion',

@@ -22,7 +22,7 @@ Bundle 增加一个 `dsh-jev` 条目。依次打开**插件**、选择 **dsh-jev
 
 ## 配置
 
-下面的 profile 配置启用 Advisory，并限制关键节点、调用频率和 Jev 输入输出。把 `decisionMode` 改为 `shadow` 可以只记录简报：
+下面的 profile 配置启用 Advisory，并限制关键节点、调用频率、Jev 输入和自动增强等待时间。把 `decisionMode` 改为 `shadow` 可以只记录简报：
 
 ```yaml
 - id: dsh-jev
@@ -44,15 +44,17 @@ Bundle 增加一个 `dsh-jev` 条目。依次打开**插件**、选择 **dsh-jev
     decisionProgressCheckStep: 4
     decisionMinimumTaskInputCharacters: 200
     decisionMaxInputCharacters: 6000
-    decisionMaxOutputTokens: 250
+    decisionDeadlineMs: 3000
     decisionMinimumConfidence: 0.7
     decisionIncludeToolResultSummaries: false
     decisionToolResultSummaryCharacters: 1000
 ```
 
-`decisionMaxOutputTokens` 是结果接受上限。System One 当前调用接口没有由本插件设置的生成 token 上限，因此超过该值的响应会被记录为失败，但已经产生的上游用量无法撤销。
+`decisionDeadlineMs` 是一次自动增强的端到端等待时限，覆盖凭证解析、请求、响应和本地简报生成。达到时限后插件记录 `DECISION_GUIDANCE_DEADLINE_EXCEEDED` 并让主模型使用原始请求继续执行。`timeoutMs` 仍是 Jev HTTP 客户端的传输超时，供连接测试、显式工具和较长的底层调用使用。
 
-插件配置使用 live volatile 字段；保存后后续调用读取新值。API 密钥由 DSH Credentials 写入，浏览器不会回读密钥。配置页的“测试连接”通过 Host 使用已保存配置发起一次小型、可能计费的 Jev 请求，不创建 Agent 或 Session；页面只接收模型、延迟或安全错误码。配置页还显示最近在线 Session 的无内容调用摘要、数据范围和失败回退说明。`providerName` 标识已注册的 Decision provider，因此在组件本次装载期间固定。
+插件不再根据 Jev 报告的输出 token 拒绝已经收到的有效结果。Provider usage 用于成本统计；进入主模型的是从固定协议字段生成的短决策简报，而不是 Jev 原始响应。旧配置中的 `decisionMaxOutputTokens` 仍可加载，但已被忽略。
+
+插件配置使用 live volatile 字段；保存后后续调用读取新值。API 密钥由 DSH Credentials 写入，浏览器不会回读密钥。配置页的“测试连接”通过 Host 使用已保存配置发起一次小型、可能计费的 Jev 请求，不创建 Agent 或 Session；页面只接收模型、延迟或安全错误码。配置页分别显示 Jev 响应数、有效简报数和实际注入数，并显示最近调用、置信度、阈值、未注入原因以及标明后续是否恢复成功的历史最近失败。`providerName` 标识已注册的 Decision provider，因此在组件本次装载期间固定。
 
 ## 关键节点
 
@@ -73,13 +75,13 @@ Bundle 增加一个 `dsh-jev` 条目。依次打开**插件**、选择 **dsh-jev
 
 命中关键节点后，插件先写入可忽略的 `plugin:dsh-jev/decision-request`，其中包含版本、触发原因、非内容信号、输入统计和发送给 Jev 的精确有界请求。随后写入配对的 `plugin:dsh-jev/decision-result`，记录结构化简报或不含凭证的失败、延迟和 token usage。
 
-库使用者可以调用 `summarizeDecisionGuidance(session)`，在本地汇总当前 Session 的调用、结果、Jev token、延迟和节点分布；摘要不返回请求正文或答案。
+库使用者可以调用 `summarizeDecisionGuidance(session)`，在本地汇总当前 Session 的调用、Jev 响应、有效简报、实际注入、token、延迟和节点分布；摘要不返回请求正文或答案。
 
-决策简报使用固定词汇表达任务类型、信息充分度、推荐动作、候选方向、应避免行为、风险、歧义和置信度。协议最多保留三个候选方向，不要求 Jev 输出隐藏思维过程或自由展开的长篇分析。
+`decision-brief-v2` 按关键节点发送最小问题集。所有节点询问信息充分度、推荐动作、方向和歧义；`progress-check` 增加应避免行为，`pre-conclusion` 增加风险，`tool-recovery` 同时增加两者。`task-intake` 从七个问题缩减为四个问题。简报使用固定词汇并最多保留三个候选方向，不要求 Jev 输出隐藏思维过程或自由展开的长篇分析。问题数量减少已经由测试验证；真实 token 和任务效果仍需通过 Baseline、Shadow、Advisory 配对运行测量。
 
 Shadow 只保存上述记录，不改变主模型输入。Advisory 把通过校验和最低置信度阈值的简报作为带来源的消息加入当前 step；该消息与精确简报记录都进入 Session，因此重放可以重建模型输入。简报要求主模型结合原始证据独立判断，并允许接受、调整或拒绝建议。
 
-Jev 超时、无效响应、低置信度或输出超限不会注入内容，也不会替换或阻止主模型路线；当前 step 只会增加 Jev 调用延迟。简报使用固定协议值，不包含 Jev 自由文本，并明确不能授权工具、删除、付款、发布、凭证访问或权限变更。
+Jev 超时、无效响应或低置信度不会注入内容，也不会替换或阻止主模型路线。自动增强达到短 deadline 后会中止等待并让当前 step 继续；已经收到响应但无法生成简报时，失败记录仍保留可用的 provider、模型、token usage 和延迟。简报使用固定协议值，不包含 Jev 自由文本，并明确不能授权工具、删除、付款、发布、凭证访问或权限变更。
 
 把 `decisionMode` 设为 `off` 后，自动触发器不会调用 Jev，也不会写入决策记录；显式 `jev_decide` 工具仍然可用。
 

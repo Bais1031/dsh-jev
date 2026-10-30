@@ -14,14 +14,26 @@ export type DshJevSettingsLocaleKey =
   | 'decisionProgressCheckStep' | 'decisionProgressCheckStepHint'
   | 'decisionMinimumTaskInputCharacters' | 'decisionMinimumTaskInputCharactersHint'
   | 'decisionMaxInputCharacters' | 'decisionMaxInputCharactersHint'
-  | 'decisionMaxOutputTokens' | 'decisionMaxOutputTokensHint'
+  | 'decisionDeadlineMs' | 'decisionDeadlineMsHint'
   | 'decisionMinimumConfidence' | 'decisionMinimumConfidenceHint'
   | 'decisionIncludeToolResultSummaries' | 'decisionIncludeToolResultSummariesHint'
   | 'decisionToolResultSummaryCharacters' | 'decisionToolResultSummaryCharactersHint'
   | 'connectionHeading' | 'connectionExplanation' | 'connectionTest' | 'connectionTesting'
   | 'connectionIdle' | 'connectionSuccess' | 'connectionFailure'
   | 'sessionHeading' | 'sessionExplanation' | 'sessionEmpty' | 'sessionCalls'
-  | 'sessionSuccesses' | 'sessionFailures' | 'sessionTokens' | 'sessionLatency'
+  | 'sessionProviderSuccesses' | 'sessionValidBriefs' | 'sessionInjectedAdvisories'
+  | 'sessionFailures' | 'sessionTokens' | 'sessionLatency'
+  | 'sessionLatestCall' | 'sessionMode' | 'sessionTurn' | 'sessionJevResponse' | 'sessionBrief'
+  | 'sessionReason' | 'sessionConfidence' | 'sessionThreshold'
+  | 'callStatusPending' | 'callStatusSuccess' | 'callStatusFailure'
+  | 'briefStatusPending' | 'briefStatusInjected' | 'briefStatusShadowOnly'
+  | 'briefStatusBelowConfidence' | 'briefStatusInvalid' | 'briefStatusUnavailable'
+  | 'reasonConfidenceBelowThreshold' | 'reasonInvalidResult' | 'reasonDeadline'
+  | 'reasonProviderFailure' | 'reasonCancelled' | 'reasonShadowMode' | 'reasonUnexpected'
+  | 'sessionLatestFailure' | 'sessionHistoricalFailure' | 'sessionFollowedBySuccess'
+  | 'sessionFailureStage' | 'sessionResponseReceived' | 'sessionNoResponse'
+  | 'failureStageProvider' | 'failureStageDeadline' | 'failureStageCancellation'
+  | 'failureStageProjection' | 'failureStageUnexpected' | 'failureStageUnknown'
   | 'sessionRefresh' | 'sessionRefreshing'
   | 'sessionFailed'
   | 'privacyHeading' | 'privacyExplanation' | 'fallbackExplanation'
@@ -60,8 +72,8 @@ export const en: Record<DshJevSettingsLocaleKey, string> = {
   decisionMinimumTaskInputCharactersHint: 'Input size that can trigger intake analysis without a complexity keyword.',
   decisionMaxInputCharacters: 'Decision input characters',
   decisionMaxInputCharactersHint: 'Maximum Unicode characters copied into one automatic Jev request.',
-  decisionMaxOutputTokens: 'Decision output-token limit',
-  decisionMaxOutputTokensHint: 'Reject a result when Jev reports more output tokens; the upstream call has already incurred that usage.',
+  decisionDeadlineMs: 'Automatic decision deadline (ms)',
+  decisionDeadlineMsHint: 'Maximum end-to-end wait for automatic Jev guidance. A timeout leaves the main model request unchanged.',
   decisionMinimumConfidence: 'Minimum decision confidence',
   decisionMinimumConfidenceHint: 'Minimum joint action and focus confidence reserved for later Advisory use.',
   decisionIncludeToolResultSummaries: 'Include previous tool-result text',
@@ -79,10 +91,48 @@ export const en: Record<DshJevSettingsLocaleKey, string> = {
   sessionExplanation: 'Content-free local totals for automatic Jev calls observed by this plugin instance.',
   sessionEmpty: 'No live Agent Session has been observed.',
   sessionCalls: 'Calls',
-  sessionSuccesses: 'Succeeded',
+  sessionProviderSuccesses: 'Jev responses',
+  sessionValidBriefs: 'Valid briefs',
+  sessionInjectedAdvisories: 'Injected briefs',
   sessionFailures: 'Failed',
   sessionTokens: 'Jev tokens',
   sessionLatency: 'Jev latency',
+  sessionLatestCall: 'Latest call',
+  sessionMode: 'Mode',
+  sessionTurn: 'Turn',
+  sessionJevResponse: 'Jev response',
+  sessionBrief: 'Brief',
+  sessionReason: 'Reason',
+  sessionConfidence: 'Confidence',
+  sessionThreshold: 'Threshold',
+  callStatusPending: 'Pending',
+  callStatusSuccess: 'Succeeded',
+  callStatusFailure: 'Failed',
+  briefStatusPending: 'Pending',
+  briefStatusInjected: 'Injected',
+  briefStatusShadowOnly: 'Shadow only',
+  briefStatusBelowConfidence: 'Not injected',
+  briefStatusInvalid: 'Invalid',
+  briefStatusUnavailable: 'Unavailable',
+  reasonConfidenceBelowThreshold: 'confidence below threshold',
+  reasonInvalidResult: 'invalid result',
+  reasonDeadline: 'automatic deadline exceeded',
+  reasonProviderFailure: 'provider failed',
+  reasonCancelled: 'Agent cancelled',
+  reasonShadowMode: 'Shadow mode does not inject',
+  reasonUnexpected: 'unexpected failure',
+  sessionLatestFailure: 'Latest failure',
+  sessionHistoricalFailure: 'Historical latest failure',
+  sessionFollowedBySuccess: 'a later call succeeded',
+  sessionFailureStage: 'Stage',
+  sessionResponseReceived: 'Jev response received',
+  sessionNoResponse: 'No Jev response',
+  failureStageProvider: 'provider call',
+  failureStageDeadline: 'automatic deadline',
+  failureStageCancellation: 'Agent cancellation',
+  failureStageProjection: 'brief projection',
+  failureStageUnexpected: 'unexpected failure',
+  failureStageUnknown: 'legacy or unknown',
   sessionRefresh: 'Refresh summary',
   sessionRefreshing: 'Refreshing…',
   sessionFailed: 'The local Session summary is currently unavailable.',
@@ -137,8 +187,8 @@ export const zh: Record<DshJevSettingsLocaleKey, string> = {
   decisionMinimumTaskInputCharactersHint: '没有复杂任务关键词时，可触发入口分析的输入长度。',
   decisionMaxInputCharacters: '决策输入字符上限',
   decisionMaxInputCharactersHint: '一次自动 Jev 请求最多复制的 Unicode 字符数。',
-  decisionMaxOutputTokens: '决策输出 token 上限',
-  decisionMaxOutputTokensHint: 'Jev 报告的输出超过上限时拒绝结果；上游调用此时已经产生用量。',
+  decisionDeadlineMs: '自动决策时限（毫秒）',
+  decisionDeadlineMsHint: '自动 Jev 增强的端到端最长等待时间；超时后主模型请求保持不变并继续执行。',
   decisionMinimumConfidence: '最低决策置信度',
   decisionMinimumConfidenceHint: '为后续 Advisory 使用预留的动作和方向联合置信度下限。',
   decisionIncludeToolResultSummaries: '包含上一步工具结果文本',
@@ -156,10 +206,48 @@ export const zh: Record<DshJevSettingsLocaleKey, string> = {
   sessionExplanation: '本插件实例观测到的自动 Jev 调用本地汇总，不含对话内容。',
   sessionEmpty: '尚未观测到在线 Agent Session。',
   sessionCalls: '调用数',
-  sessionSuccesses: '成功数',
+  sessionProviderSuccesses: 'Jev 响应成功数',
+  sessionValidBriefs: '有效简报数',
+  sessionInjectedAdvisories: '实际注入数',
   sessionFailures: '失败数',
   sessionTokens: 'Jev token',
   sessionLatency: 'Jev 延迟',
+  sessionLatestCall: '最新调用',
+  sessionMode: '模式',
+  sessionTurn: 'Turn',
+  sessionJevResponse: 'Jev 响应',
+  sessionBrief: '简报',
+  sessionReason: '原因',
+  sessionConfidence: '置信度',
+  sessionThreshold: '要求阈值',
+  callStatusPending: '等待中',
+  callStatusSuccess: '成功',
+  callStatusFailure: '失败',
+  briefStatusPending: '等待中',
+  briefStatusInjected: '已注入',
+  briefStatusShadowOnly: '仅 Shadow 记录',
+  briefStatusBelowConfidence: '未注入',
+  briefStatusInvalid: '无效',
+  briefStatusUnavailable: '不可用',
+  reasonConfidenceBelowThreshold: '置信度不足',
+  reasonInvalidResult: '结果格式无效',
+  reasonDeadline: '超过自动决策时限',
+  reasonProviderFailure: '提供方调用失败',
+  reasonCancelled: 'Agent 已取消',
+  reasonShadowMode: 'Shadow 模式不注入',
+  reasonUnexpected: '意外故障',
+  sessionLatestFailure: '最近失败',
+  sessionHistoricalFailure: '历史最近失败',
+  sessionFollowedBySuccess: '此后已有成功调用',
+  sessionFailureStage: '阶段',
+  sessionResponseReceived: '已收到 Jev 响应',
+  sessionNoResponse: '未收到 Jev 响应',
+  failureStageProvider: '提供方调用',
+  failureStageDeadline: '自动决策时限',
+  failureStageCancellation: 'Agent 取消',
+  failureStageProjection: '简报生成',
+  failureStageUnexpected: '意外故障',
+  failureStageUnknown: '旧记录或未知阶段',
   sessionRefresh: '刷新汇总',
   sessionRefreshing: '刷新中…',
   sessionFailed: '当前无法读取本地 Session 汇总。',

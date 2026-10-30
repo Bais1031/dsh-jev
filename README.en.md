@@ -22,7 +22,7 @@ The bundle adds one `dsh-jev` row. Open **Plugins**, select **dsh-jev**, then se
 
 ## Configuration
 
-The following profile configuration enables Advisory and limits critical nodes, call frequency, and Jev input and output. Set `decisionMode` to `shadow` to record briefs without injection:
+The following profile configuration enables Advisory and limits critical nodes, call frequency, Jev input, and the automatic-guidance wait. Set `decisionMode` to `shadow` to record briefs without injection:
 
 ```yaml
 - id: dsh-jev
@@ -44,15 +44,17 @@ The following profile configuration enables Advisory and limits critical nodes, 
     decisionProgressCheckStep: 4
     decisionMinimumTaskInputCharacters: 200
     decisionMaxInputCharacters: 6000
-    decisionMaxOutputTokens: 250
+    decisionDeadlineMs: 3000
     decisionMinimumConfidence: 0.7
     decisionIncludeToolResultSummaries: false
     decisionToolResultSummaryCharacters: 1000
 ```
 
-`decisionMaxOutputTokens` is a result-acceptance limit. The current System One call does not expose a generation-token limit that this plugin can set, so an oversized response is recorded as a failure after its upstream usage has already occurred.
+`decisionDeadlineMs` is the end-to-end wait for one automatic guidance attempt, including credential resolution, request, response, and local brief projection. At the deadline the plugin records `DECISION_GUIDANCE_DEADLINE_EXCEEDED` and lets the main model continue with its original request. `timeoutMs` remains the Jev HTTP transport timeout used by connection checks, the explicit tool, and longer lower-level calls.
 
-Plugin settings are live volatile fields; later calls read saved values without a restart. The API key field writes through DSH Credentials and the browser never reads the secret back. Test connection asks the Host to make one small, potentially billable Jev request with saved settings; it creates no Agent or Session, and the page receives only the model and latency or a safe error code. The page also shows content-free totals for the latest live Session plus data-scope and fallback explanations. `providerName` identifies the registered Decision provider and remains fixed for the lifetime of the loaded component.
+The plugin no longer rejects a valid response because of provider-reported output-token usage. Provider usage is retained for cost accounting; the main model receives a short brief rendered from fixed protocol fields, never the raw Jev response. Existing `decisionMaxOutputTokens` settings still load but are ignored.
+
+Plugin settings are live volatile fields; later calls read saved values without a restart. The API key field writes through DSH Credentials and the browser never reads the secret back. Test connection asks the Host to make one small, potentially billable Jev request with saved settings; it creates no Agent or Session, and the page receives only the model and latency or a safe error code. The page separately shows Jev responses, valid briefs, and injected briefs. It also shows the latest call, confidence, threshold, non-injection reason, and whether a later call recovered after the most recent historical failure. `providerName` identifies the registered Decision provider and remains fixed for the lifetime of the loaded component.
 
 ## Critical nodes
 
@@ -73,13 +75,13 @@ By default, only current user text bounded by the total character limit is sent.
 
 When a critical node is selected, the plugin first writes an ignorable `plugin:dsh-jev/decision-request` with protocol versions, trigger evidence, non-content signals, input statistics, and the exact bounded Jev request. It then writes a paired `plugin:dsh-jev/decision-result` containing either the structured brief or a secret-free failure, latency, and token usage.
 
-Library consumers can call `summarizeDecisionGuidance(session)` to aggregate calls, outcomes, Jev tokens, latency, and node distribution locally. The summary omits request content and answers.
+Library consumers can call `summarizeDecisionGuidance(session)` to aggregate calls, Jev responses, valid briefs, actual injections, tokens, latency, and node distribution locally. The summary omits request content and answers.
 
-The decision brief uses fixed vocabularies for task type, information sufficiency, recommended action, candidate directions, behavior to avoid, risk, ambiguity, and confidence. The protocol retains at most three candidate directions and does not ask Jev for hidden reasoning or unrestricted prose.
+`decision-brief-v2` sends the smallest question set for each critical node. Every node asks about information sufficiency, recommended action, focus, and ambiguity; `progress-check` adds behavior to avoid, `pre-conclusion` adds risk, and `tool-recovery` adds both. `task-intake` therefore drops from seven questions to four. Briefs use fixed vocabularies, retain at most three candidate directions, and do not ask Jev for hidden reasoning or unrestricted prose. Tests establish the smaller question count; paired Baseline, Shadow, and Advisory runs must still measure real tokens and task outcomes.
 
 Shadow only stores these records and does not change main-model input. Advisory adds a source-attributed brief that passes validation and the minimum confidence threshold to the current step. Both the message and exact brief record enter the Session, so replay can reconstruct the model input. The brief tells the main model to assess the original evidence independently and permits it to accept, adapt, or reject the advice.
 
-A Jev timeout, invalid response, low confidence, or output-limit rejection injects no content and does not replace or block the main-model route; the current step only incurs Jev call latency. The brief contains fixed protocol values rather than Jev free text and explicitly cannot authorize tools, deletion, payment, publication, credential access, or permission changes.
+A Jev timeout, invalid response, or low confidence injects no content and does not replace or block the main-model route. Automatic guidance stops waiting at its short deadline and lets the current step continue. When a response was received but brief projection failed, the failure record still retains available provider, model, token usage, and latency. The brief contains fixed protocol values rather than Jev free text and explicitly cannot authorize tools, deletion, payment, publication, credential access, or permission changes.
 
 Set `decisionMode` to `off` to prevent automatic Jev calls and decision records. The explicit `jev_decide` tool remains available.
 

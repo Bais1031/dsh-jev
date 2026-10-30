@@ -31,7 +31,7 @@ export interface DshJevSettings {
   readonly decisionProgressCheckStep?: number
   readonly decisionMinimumTaskInputCharacters?: number
   readonly decisionMaxInputCharacters?: number
-  readonly decisionMaxOutputTokens?: number
+  readonly decisionDeadlineMs?: number
   readonly decisionMinimumConfidence?: number
   readonly decisionIncludeToolResultSummaries?: boolean
   readonly decisionToolResultSummaryCharacters?: number
@@ -83,7 +83,7 @@ export interface DshJevConfigCardState extends SettingsFormShell {
   readonly decisionProgressCheckStep: SettingsFieldState
   readonly decisionMinimumTaskInputCharacters: SettingsFieldState
   readonly decisionMaxInputCharacters: SettingsFieldState
-  readonly decisionMaxOutputTokens: SettingsFieldState
+  readonly decisionDeadlineMs: SettingsFieldState
   readonly decisionMinimumConfidence: SettingsFieldState
   readonly decisionIncludeToolResultSummaries: SettingsFieldState
   readonly decisionToolResultSummaryCharacters: SettingsFieldState
@@ -158,7 +158,7 @@ export class DshJevConfigCardController {
       decisionProgressCheckStep: this.form.field('decisionProgressCheckStep'),
       decisionMinimumTaskInputCharacters: this.form.field('decisionMinimumTaskInputCharacters'),
       decisionMaxInputCharacters: this.form.field('decisionMaxInputCharacters'),
-      decisionMaxOutputTokens: this.form.field('decisionMaxOutputTokens'),
+      decisionDeadlineMs: this.form.field('decisionDeadlineMs'),
       decisionMinimumConfidence: this.form.field('decisionMinimumConfidence'),
       decisionIncludeToolResultSummaries: this.form.field('decisionIncludeToolResultSummaries'),
       decisionToolResultSummaryCharacters: this.form.field('decisionToolResultSummaryCharacters'),
@@ -281,7 +281,7 @@ function fieldSpecs(): SettingsFieldSpec[] {
     numberField('decisionProgressCheckStep', value => Number.isInteger(value) && value >= 2 && value <= 1_000),
     numberField('decisionMinimumTaskInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
     numberField('decisionMaxInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
-    numberField('decisionMaxOutputTokens', value => Number.isInteger(value) && value >= 1 && value <= 10_000),
+    numberField('decisionDeadlineMs', value => Number.isInteger(value) && value >= 1 && value <= 120_000),
     numberField('decisionMinimumConfidence', value => value >= 0 && value <= 1),
     booleanField('decisionIncludeToolResultSummaries'),
     numberField('decisionToolResultSummaryCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),

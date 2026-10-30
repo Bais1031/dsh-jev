@@ -143,7 +143,18 @@ describe('DshJevConfigCardController', () => {
       testConnection: vi.fn(async () => ({ ok: true as const, model: 'jev-live', latencyMs: 17 })),
       latestSessionSummary: vi.fn(async () => ({
         sessionId: 'session-1', calls: 2, successes: 1, failures: 1, pending: 0,
+        providerSuccesses: 1, validBriefs: 1, injectedAdvisories: 0,
         inputTokens: 20, outputTokens: 4, totalTokens: 24, totalLatencyMs: 33,
+        latestCall: {
+          mode: 'advisory' as const, turn: 2, step: 1, nodeType: 'task-intake' as const,
+          status: 'success' as const, responseReceived: true, briefStatus: 'below-confidence' as const,
+          reason: 'confidence-below-threshold', confidence: 0.69, minimumConfidence: 0.7, code: null,
+        },
+        latestFailure: {
+          code: 'DECISION_PROVIDER_FAILURE', stage: 'provider' as const, retryable: true,
+          responseReceived: false, providerCode: 'JEV_TIMEOUT', latencyMs: 16,
+          turn: 1, followedBySuccess: true,
+        },
       })),
     }
     const controller = new DshJevConfigCardController(scope, credentialStub(), status)

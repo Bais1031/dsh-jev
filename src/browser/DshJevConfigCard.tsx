@@ -53,7 +53,7 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
       <Field props={props} state={state} field="decisionProgressCheckStep" label="decisionProgressCheckStep" hint="decisionProgressCheckStepHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMinimumTaskInputCharacters" label="decisionMinimumTaskInputCharacters" hint="decisionMinimumTaskInputCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMaxInputCharacters" label="decisionMaxInputCharacters" hint="decisionMaxInputCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
-      <Field props={props} state={state} field="decisionMaxOutputTokens" label="decisionMaxOutputTokens" hint="decisionMaxOutputTokensHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionDeadlineMs" label="decisionDeadlineMs" hint="decisionDeadlineMsHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMinimumConfidence" label="decisionMinimumConfidence" hint="decisionMinimumConfidenceHint" invalid="invalidProbability" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionIncludeToolResultSummaries" label="decisionIncludeToolResultSummaries" hint="decisionIncludeToolResultSummariesHint" invalid="invalidBoolean" disabled={disabled} />
       <Field props={props} state={state} field="decisionToolResultSummaryCharacters" label="decisionToolResultSummaryCharacters" hint="decisionToolResultSummaryCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
@@ -79,11 +79,19 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
           ? <p style={styles.statusText} role="status">{t('sessionEmpty')}</p>
           : <dl style={styles.metrics}>
               <div><dt>{t('sessionCalls')}</dt><dd>{state.latestSessionSummary.calls}</dd></div>
-              <div><dt>{t('sessionSuccesses')}</dt><dd>{state.latestSessionSummary.successes}</dd></div>
+              <div><dt>{t('sessionProviderSuccesses')}</dt><dd>{state.latestSessionSummary.providerSuccesses}</dd></div>
+              <div><dt>{t('sessionValidBriefs')}</dt><dd>{state.latestSessionSummary.validBriefs}</dd></div>
+              <div><dt>{t('sessionInjectedAdvisories')}</dt><dd>{state.latestSessionSummary.injectedAdvisories}</dd></div>
               <div><dt>{t('sessionFailures')}</dt><dd>{state.latestSessionSummary.failures}</dd></div>
               <div><dt>{t('sessionTokens')}</dt><dd>{state.latestSessionSummary.totalTokens}</dd></div>
               <div><dt>{t('sessionLatency')}</dt><dd>{state.latestSessionSummary.totalLatencyMs} ms</dd></div>
             </dl>}
+        {state.latestSessionSummary?.latestCall === undefined || state.latestSessionSummary.latestCall === null
+          ? null
+          : <LatestCall call={state.latestSessionSummary.latestCall} t={t} />}
+        {state.latestSessionSummary === null || state.latestSessionSummary.latestFailure === null
+          ? null
+          : <LatestFailure failure={state.latestSessionSummary.latestFailure} t={t} />}
         <Button variant="outline" size="sm" disabled={state.summaryLoading} onClick={props.refreshSummary}>
           {state.summaryLoading ? t('sessionRefreshing') : t('sessionRefresh')}
         </Button>
@@ -94,6 +102,87 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
         <p style={styles.explanation}>{t('fallbackExplanation')}</p>
       </section>
     </SettingsForm>
+  )
+}
+
+function LatestCall({ call, t }: {
+  call: NonNullable<NonNullable<DshJevConfigCardState['latestSessionSummary']>['latestCall']>
+  t: (key: DshJevSettingsLocaleKey) => string
+}) {
+  const status = {
+    pending: 'callStatusPending',
+    success: 'callStatusSuccess',
+    failure: 'callStatusFailure',
+  } as const
+  const briefStatus = {
+    pending: 'briefStatusPending',
+    injected: 'briefStatusInjected',
+    'shadow-only': 'briefStatusShadowOnly',
+    'below-confidence': 'briefStatusBelowConfidence',
+    invalid: 'briefStatusInvalid',
+    unavailable: 'briefStatusUnavailable',
+  } as const
+  const state = call.status === 'pending' ? 'ongoing' : call.status === 'success' ? 'done' : 'error'
+  return (
+    <p style={styles.statusText} role="status">
+      <span style={styles.status}>
+        <StateDot state={state} />
+        <span>
+          {t('sessionLatestCall')}: {t(status[call.status])} · {t('sessionMode')}: {call.mode} · {t('sessionTurn')}: {call.turn}
+          <br />
+          {t('sessionJevResponse')}: {call.responseReceived ? t('sessionResponseReceived') : t('sessionNoResponse')}
+          {' · '}{t('sessionBrief')}: {t(briefStatus[call.briefStatus])}
+          {call.reason === null ? null : <> · {t('sessionReason')}: {reasonText(call.reason, t)} (<code>{call.reason}</code>)</>}
+          {call.confidence === null ? null : <> · {t('sessionConfidence')}: {call.confidence.toFixed(3)}</>}
+          {call.minimumConfidence === null ? null : <> · {t('sessionThreshold')}: {call.minimumConfidence.toFixed(3)}</>}
+          {call.code === null ? null : <> · <code>{call.code}</code></>}
+        </span>
+      </span>
+    </p>
+  )
+}
+
+function reasonText(reason: string, t: (key: DshJevSettingsLocaleKey) => string): string {
+  const reasons: Readonly<Record<string, DshJevSettingsLocaleKey>> = {
+    'confidence-below-threshold': 'reasonConfidenceBelowThreshold',
+    'invalid-result': 'reasonInvalidResult',
+    deadline: 'reasonDeadline',
+    'provider-failure': 'reasonProviderFailure',
+    cancelled: 'reasonCancelled',
+    'shadow-mode': 'reasonShadowMode',
+    unexpected: 'reasonUnexpected',
+  }
+  const key = reasons[reason]
+  return key === undefined ? reason : t(key)
+}
+
+function LatestFailure({ failure, t }: {
+  failure: NonNullable<NonNullable<DshJevConfigCardState['latestSessionSummary']>['latestFailure']>
+  t: (key: DshJevSettingsLocaleKey) => string
+}) {
+  const stage = {
+    provider: 'failureStageProvider',
+    deadline: 'failureStageDeadline',
+    cancellation: 'failureStageCancellation',
+    projection: 'failureStageProjection',
+    unexpected: 'failureStageUnexpected',
+    unknown: 'failureStageUnknown',
+  } as const
+  return (
+    <p style={styles.statusText} role="alert">
+      <span style={styles.status}>
+        <StateDot state="error" />
+        <span>
+          {t(failure.followedBySuccess ? 'sessionHistoricalFailure' : 'sessionLatestFailure')}: <code>{failure.code}</code>
+          {failure.turn === undefined ? null : <> · {t('sessionTurn')}: {failure.turn}</>}
+          {failure.providerCode === undefined ? null : <> · <code>{failure.providerCode}</code></>}
+          {' · '}{t('sessionFailureStage')}: {t(stage[failure.stage])}
+          {' · '}{failure.responseReceived ? t('sessionResponseReceived') : t('sessionNoResponse')}
+          {failure.latencyMs === undefined ? null : <> · {failure.latencyMs} ms</>}
+          {failure.followedBySuccess ? <> · {t('sessionFollowedBySuccess')}</> : null}
+        </span>
+      </span>
+    </p>
   )
 }
 
