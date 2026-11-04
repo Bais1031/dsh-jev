@@ -50,6 +50,11 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
       <Field props={props} state={state} field="decisionNodes" label="decisionNodes" hint="decisionNodesHint" invalid="invalidNodes" disabled={disabled} />
       <Field props={props} state={state} field="decisionCooldownSteps" label="decisionCooldownSteps" hint="decisionCooldownStepsHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMaxCallsPerSession" label="decisionMaxCallsPerSession" hint="decisionMaxCallsPerSessionHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionMaxTokensPerSession" label="decisionMaxTokensPerSession" hint="decisionMaxTokensPerSessionHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionLowConfidenceBackoffThreshold" label="decisionLowConfidenceBackoffThreshold" hint="decisionLowConfidenceBackoffThresholdHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionProviderFailureBackoffThreshold" label="decisionProviderFailureBackoffThreshold" hint="decisionProviderFailureBackoffThresholdHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionDeadlineBackoffThreshold" label="decisionDeadlineBackoffThreshold" hint="decisionDeadlineBackoffThresholdHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="decisionBackoffAllowsRecoveryNodes" label="decisionBackoffAllowsRecoveryNodes" hint="decisionBackoffAllowsRecoveryNodesHint" invalid="invalidBoolean" disabled={disabled} />
       <Field props={props} state={state} field="decisionProgressCheckStep" label="decisionProgressCheckStep" hint="decisionProgressCheckStepHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMinimumTaskInputCharacters" label="decisionMinimumTaskInputCharacters" hint="decisionMinimumTaskInputCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionMaxInputCharacters" label="decisionMaxInputCharacters" hint="decisionMaxInputCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
@@ -57,6 +62,7 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
       <Field props={props} state={state} field="decisionMinimumConfidence" label="decisionMinimumConfidence" hint="decisionMinimumConfidenceHint" invalid="invalidProbability" disabled={disabled} numeric />
       <Field props={props} state={state} field="decisionIncludeToolResultSummaries" label="decisionIncludeToolResultSummaries" hint="decisionIncludeToolResultSummariesHint" invalid="invalidBoolean" disabled={disabled} />
       <Field props={props} state={state} field="decisionToolResultSummaryCharacters" label="decisionToolResultSummaryCharacters" hint="decisionToolResultSummaryCharactersHint" invalid="invalidNumber" disabled={disabled} numeric />
+      <Field props={props} state={state} field="failureCaptureEnabled" label="failureCaptureEnabled" hint="failureCaptureEnabledHint" invalid="invalidBoolean" disabled={disabled} />
       <section style={styles.section} aria-labelledby="dsh-jev-connection-heading">
         <h3 id="dsh-jev-connection-heading" style={styles.heading}>{t('connectionHeading')}</h3>
         <p style={styles.explanation}>{t('connectionExplanation')}</p>
@@ -83,8 +89,11 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
               <div><dt>{t('sessionValidBriefs')}</dt><dd>{state.latestSessionSummary.validBriefs}</dd></div>
               <div><dt>{t('sessionInjectedAdvisories')}</dt><dd>{state.latestSessionSummary.injectedAdvisories}</dd></div>
               <div><dt>{t('sessionFailures')}</dt><dd>{state.latestSessionSummary.failures}</dd></div>
+              <div><dt>{t('sessionSkips')}</dt><dd>{state.latestSessionSummary.skips}</dd></div>
               <div><dt>{t('sessionTokens')}</dt><dd>{state.latestSessionSummary.totalTokens}</dd></div>
               <div><dt>{t('sessionLatency')}</dt><dd>{state.latestSessionSummary.totalLatencyMs} ms</dd></div>
+              <div><dt>{t('sessionFailureCandidates')}</dt><dd>{state.latestSessionSummary.failureCandidates}/2</dd></div>
+              <div><dt>{t('sessionFailurePairReady')}</dt><dd>{state.latestSessionSummary.failurePairReady ? t('yes') : t('no')}</dd></div>
             </dl>}
         {state.latestSessionSummary?.latestCall === undefined || state.latestSessionSummary.latestCall === null
           ? null
@@ -92,6 +101,13 @@ export function DshJevConfigCard(props: DshJevConfigCardProps) {
         {state.latestSessionSummary === null || state.latestSessionSummary.latestFailure === null
           ? null
           : <LatestFailure failure={state.latestSessionSummary.latestFailure} t={t} />}
+        {state.latestSessionSummary === null || state.latestSessionSummary.latestSkip === null
+          ? null
+          : <p style={styles.statusText} role="status">
+              {t('sessionLatestSkip')}: <code>{state.latestSessionSummary.latestSkip.reason}</code>
+              {' · '}{t('sessionTurn')}: {state.latestSessionSummary.latestSkip.turn}
+              {' · '}{t('sessionBudget')}: {state.latestSessionSummary.latestSkip.usedTokens}/{state.latestSessionSummary.latestSkip.tokenBudget}
+            </p>}
         <Button variant="outline" size="sm" disabled={state.summaryLoading} onClick={props.refreshSummary}>
           {state.summaryLoading ? t('sessionRefreshing') : t('sessionRefresh')}
         </Button>

@@ -12,6 +12,7 @@ export {
 export { containsLikelyCredential, DecisionTriggerGate, selectDecisionTrigger } from './decision-guidance-trigger.js'
 export { installDecisionGuidanceShadow, renderDecisionAdvisory } from './decision-guidance-shadow.js'
 export { summarizeDecisionGuidance } from './decision-guidance-summary.js'
+export { captureFailureCandidate, installFailureCapture, isFailureCandidateRecord } from './failure-capture.js'
 export {
   createDecisionGuidanceReport,
   compareDecisionGuidanceReports,
@@ -47,8 +48,10 @@ export type {
 } from './decision-guidance-protocol.js'
 export type {
   DecisionTrigger,
+  DecisionTriggerGateResult,
   DecisionTriggerOptions,
   DecisionTriggerReason,
+  DecisionTriggerSkipReason,
   DecisionTriggerSignals,
 } from './decision-guidance-trigger.js'
 export type {
@@ -59,6 +62,7 @@ export type {
   DecisionGuidanceRequestRecord,
   DecisionGuidanceResultRecord,
   DecisionGuidanceService,
+  DecisionGuidanceSkipRecord,
   DecisionGuidanceShadowOptions,
   DecisionGuidanceSuccessRecord,
 } from './decision-guidance-shadow.js'
@@ -67,6 +71,7 @@ export type {
   DecisionGuidanceSessionSummary,
   DecisionGuidanceUsageSummary,
 } from './decision-guidance-summary.js'
+export type { FailureCandidateLabel, FailureCandidateRecord, FailureCaptureOptions } from './failure-capture.js'
 export type {
   DecisionAdoption,
   DecisionGuidanceOutcomeRecord,

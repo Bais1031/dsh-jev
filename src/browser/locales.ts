@@ -11,6 +11,11 @@ export type DshJevSettingsLocaleKey =
   | 'decisionMode' | 'decisionModeHint' | 'decisionNodes' | 'decisionNodesHint'
   | 'decisionCooldownSteps' | 'decisionCooldownStepsHint'
   | 'decisionMaxCallsPerSession' | 'decisionMaxCallsPerSessionHint'
+  | 'decisionMaxTokensPerSession' | 'decisionMaxTokensPerSessionHint'
+  | 'decisionLowConfidenceBackoffThreshold' | 'decisionLowConfidenceBackoffThresholdHint'
+  | 'decisionProviderFailureBackoffThreshold' | 'decisionProviderFailureBackoffThresholdHint'
+  | 'decisionDeadlineBackoffThreshold' | 'decisionDeadlineBackoffThresholdHint'
+  | 'decisionBackoffAllowsRecoveryNodes' | 'decisionBackoffAllowsRecoveryNodesHint'
   | 'decisionProgressCheckStep' | 'decisionProgressCheckStepHint'
   | 'decisionMinimumTaskInputCharacters' | 'decisionMinimumTaskInputCharactersHint'
   | 'decisionMaxInputCharacters' | 'decisionMaxInputCharactersHint'
@@ -18,11 +23,14 @@ export type DshJevSettingsLocaleKey =
   | 'decisionMinimumConfidence' | 'decisionMinimumConfidenceHint'
   | 'decisionIncludeToolResultSummaries' | 'decisionIncludeToolResultSummariesHint'
   | 'decisionToolResultSummaryCharacters' | 'decisionToolResultSummaryCharactersHint'
+  | 'failureCaptureEnabled' | 'failureCaptureEnabledHint'
   | 'connectionHeading' | 'connectionExplanation' | 'connectionTest' | 'connectionTesting'
   | 'connectionIdle' | 'connectionSuccess' | 'connectionFailure'
   | 'sessionHeading' | 'sessionExplanation' | 'sessionEmpty' | 'sessionCalls'
   | 'sessionProviderSuccesses' | 'sessionValidBriefs' | 'sessionInjectedAdvisories'
   | 'sessionFailures' | 'sessionTokens' | 'sessionLatency'
+  | 'sessionSkips' | 'sessionLatestSkip' | 'sessionBudget'
+  | 'sessionFailureCandidates' | 'sessionFailurePairReady' | 'yes' | 'no'
   | 'sessionLatestCall' | 'sessionMode' | 'sessionTurn' | 'sessionJevResponse' | 'sessionBrief'
   | 'sessionReason' | 'sessionConfidence' | 'sessionThreshold'
   | 'callStatusPending' | 'callStatusSuccess' | 'callStatusFailure'
@@ -66,10 +74,20 @@ export const en: Record<DshJevSettingsLocaleKey, string> = {
   decisionCooldownStepsHint: 'Number of admitted Agent steps required between automatic Jev calls.',
   decisionMaxCallsPerSession: 'Maximum calls per Session',
   decisionMaxCallsPerSessionHint: 'Maximum automatic Jev calls for one live Agent Session.',
+  decisionMaxTokensPerSession: 'Maximum tokens per Session',
+  decisionMaxTokensPerSessionHint: 'Automatic Jev calls stop after recorded input and output usage reaches this Session budget.',
+  decisionLowConfidenceBackoffThreshold: 'Low-confidence backoff threshold',
+  decisionLowConfidenceBackoffThresholdHint: 'Consecutive unaccepted briefs before early-node automatic calls pause for this Session.',
+  decisionProviderFailureBackoffThreshold: 'Provider-failure backoff threshold',
+  decisionProviderFailureBackoffThresholdHint: 'Consecutive provider failures before automatic calls pause for this Session.',
+  decisionDeadlineBackoffThreshold: 'Deadline backoff threshold',
+  decisionDeadlineBackoffThresholdHint: 'Consecutive automatic deadlines before calls pause for this Session.',
+  decisionBackoffAllowsRecoveryNodes: 'Allow recovery nodes during backoff',
+  decisionBackoffAllowsRecoveryNodesHint: 'Use true to keep evidence-backed tool-recovery, progress-check, and pre-conclusion nodes eligible during backoff.',
   decisionProgressCheckStep: 'Progress-check step',
   decisionProgressCheckStepHint: 'First step number eligible for stalled-progress analysis.',
-  decisionMinimumTaskInputCharacters: 'Task-intake character threshold',
-  decisionMinimumTaskInputCharactersHint: 'Input size that can trigger intake analysis without a complexity keyword.',
+  decisionMinimumTaskInputCharacters: 'Early-node character threshold',
+  decisionMinimumTaskInputCharactersHint: 'Minimum direct-user characters before task-intake, missing-information, or direction-selection may call Jev.',
   decisionMaxInputCharacters: 'Decision input characters',
   decisionMaxInputCharactersHint: 'Maximum Unicode characters copied into one automatic Jev request.',
   decisionDeadlineMs: 'Automatic decision deadline (ms)',
@@ -80,6 +98,8 @@ export const en: Record<DshJevSettingsLocaleKey, string> = {
   decisionIncludeToolResultSummariesHint: 'Use true to send a bounded text-only excerpt from the immediately preceding step. Tool arguments and binary content are never included.',
   decisionToolResultSummaryCharacters: 'Tool-result excerpt characters',
   decisionToolResultSummaryCharactersHint: 'Maximum Unicode characters reserved for the optional previous-step tool-result excerpt.',
+  failureCaptureEnabled: 'Capture explicit corrections',
+  failureCaptureEnabledHint: 'Use true to save content-free local references when a user correction starts with /jev-failure and a supported error label.',
   connectionHeading: 'Connection check',
   connectionExplanation: 'Uses the saved endpoint, model, and credential for one small billable Jev request. Save pending edits first. No Agent or Session is created.',
   connectionTest: 'Test connection',
@@ -95,8 +115,15 @@ export const en: Record<DshJevSettingsLocaleKey, string> = {
   sessionValidBriefs: 'Valid briefs',
   sessionInjectedAdvisories: 'Injected briefs',
   sessionFailures: 'Failed',
+  sessionSkips: 'Skipped',
+  sessionLatestSkip: 'Latest skip',
+  sessionBudget: 'Token budget',
   sessionTokens: 'Jev tokens',
   sessionLatency: 'Jev latency',
+  sessionFailureCandidates: 'Natural failure candidates',
+  sessionFailurePairReady: 'Pairing ready',
+  yes: 'Yes',
+  no: 'No',
   sessionLatestCall: 'Latest call',
   sessionMode: 'Mode',
   sessionTurn: 'Turn',
@@ -181,10 +208,20 @@ export const zh: Record<DshJevSettingsLocaleKey, string> = {
   decisionCooldownStepsHint: '两次自动 Jev 调用之间必须经过的 Agent step 数量。',
   decisionMaxCallsPerSession: '每个 Session 最大调用数',
   decisionMaxCallsPerSessionHint: '一个在线 Agent Session 允许的自动 Jev 调用上限。',
+  decisionMaxTokensPerSession: '每个 Session 最大 token',
+  decisionMaxTokensPerSessionHint: '已记录的 Jev 输入和输出用量达到此预算后，停止当前 Session 的自动调用。',
+  decisionLowConfidenceBackoffThreshold: '低置信度退避阈值',
+  decisionLowConfidenceBackoffThresholdHint: '连续未接受简报达到此数量后，暂停当前 Session 的早期节点自动调用。',
+  decisionProviderFailureBackoffThreshold: '提供方失败退避阈值',
+  decisionProviderFailureBackoffThresholdHint: '连续提供方失败达到此数量后，暂停当前 Session 的自动调用。',
+  decisionDeadlineBackoffThreshold: '超时退避阈值',
+  decisionDeadlineBackoffThresholdHint: '连续自动决策超时达到此数量后，暂停当前 Session 的自动调用。',
+  decisionBackoffAllowsRecoveryNodes: '退避期间允许恢复节点',
+  decisionBackoffAllowsRecoveryNodesHint: '设为 true 后，tool-recovery、progress-check 和 pre-conclusion 等已有证据节点在退避期间仍可调用。',
   decisionProgressCheckStep: '进展检查起始 step',
   decisionProgressCheckStepHint: '允许触发停滞进展分析的第一个 step 编号。',
-  decisionMinimumTaskInputCharacters: '任务入口字符阈值',
-  decisionMinimumTaskInputCharactersHint: '没有复杂任务关键词时，可触发入口分析的输入长度。',
+  decisionMinimumTaskInputCharacters: '早期节点字符阈值',
+  decisionMinimumTaskInputCharactersHint: 'task-intake、missing-information 或 direction-selection 调用 Jev 前要求的最少直接用户字符数。',
   decisionMaxInputCharacters: '决策输入字符上限',
   decisionMaxInputCharactersHint: '一次自动 Jev 请求最多复制的 Unicode 字符数。',
   decisionDeadlineMs: '自动决策时限（毫秒）',
@@ -195,6 +232,8 @@ export const zh: Record<DshJevSettingsLocaleKey, string> = {
   decisionIncludeToolResultSummariesHint: '设为 true 后，可发送紧邻上一步工具结果的有限纯文本摘录；不会包含工具参数或二进制内容。',
   decisionToolResultSummaryCharacters: '工具结果摘录字符上限',
   decisionToolResultSummaryCharactersHint: '为可选的上一步工具结果摘录保留的最大 Unicode 字符数。',
+  failureCaptureEnabled: '采集显式纠正',
+  failureCaptureEnabledHint: '设为 true 后，以 /jev-failure 和受支持错误标签开头的用户纠正会保存为不含正文的本地引用。',
   connectionHeading: '连接测试',
   connectionExplanation: '使用已保存的地址、模型和凭证发起一次小型、可能计费的 Jev 请求。请先保存待处理修改；测试不会创建 Agent 或 Session。',
   connectionTest: '测试连接',
@@ -210,8 +249,15 @@ export const zh: Record<DshJevSettingsLocaleKey, string> = {
   sessionValidBriefs: '有效简报数',
   sessionInjectedAdvisories: '实际注入数',
   sessionFailures: '失败数',
+  sessionSkips: '跳过数',
+  sessionLatestSkip: '最近跳过',
+  sessionBudget: 'Token 预算',
   sessionTokens: 'Jev token',
   sessionLatency: 'Jev 延迟',
+  sessionFailureCandidates: '自然失败候选',
+  sessionFailurePairReady: '可进行配对测试',
+  yes: '是',
+  no: '否',
   sessionLatestCall: '最新调用',
   sessionMode: '模式',
   sessionTurn: 'Turn',

@@ -134,7 +134,7 @@ describe('decision guidance Advisory integration', () => {
 
   it('renders only fixed protocol values and bounded decimal probabilities', () => {
     const text = renderDecisionAdvisory({
-      version: 2,
+      version: 3,
       nodeType: 'progress-check',
       taskType: 'analysis',
       informationSufficient: false,
@@ -152,6 +152,25 @@ describe('decision guidance Advisory integration', () => {
     expect(text).toContain('Information sufficient: false (0.123)')
     expect(text).toContain('compare-options (0.988)')
     expect(text).toContain('confidence: 0.877')
+  })
+
+  it('renders only retained fields from a partial v3 brief', () => {
+    const text = renderDecisionAdvisory({
+      version: 3,
+      nodeType: 'missing-information',
+      informationSufficient: false,
+      informationSufficientProbability: 0.15,
+      ambiguity: 'high',
+      confidence: 0.85,
+      accepted: true,
+      reasons: [],
+    })
+
+    expect(text).toContain('Information sufficient: false (0.150)')
+    expect(text).toContain('Ambiguity: high')
+    expect(text).toContain('Strongest retained signal confidence: 0.850')
+    expect(text).not.toContain('Recommended next analytical action')
+    expect(text).not.toContain('undefined')
   })
 })
 
@@ -184,8 +203,13 @@ function options(mode: DecisionGuidanceMode) {
     ] as const,
     cooldownSteps: () => 0,
     maximumCallsPerSession: () => 8,
+    maximumTokensPerSession: () => 8_000,
+    lowConfidenceBackoffThreshold: () => 2,
+    providerFailureBackoffThreshold: () => 2,
+    deadlineBackoffThreshold: () => 2,
+    backoffAllowsRecoveryNodes: () => true,
     progressCheckStep: () => 4,
-    minimumTaskInputCharacters: () => 200,
+    minimumTaskInputCharacters: () => 1,
     includeToolResultSummaries: () => false,
     toolResultSummaryCharacters: () => 1_000,
   }
@@ -197,10 +221,19 @@ function lowConfidenceResult(): DecisionResult {
     ...base,
     answers: {
       ...base.answers,
+      informationSufficient: { type: 'boolean', value: true, probability: 0.6, confidence: 0.6 },
       recommendedAction: choice('inspect-context', {
         continue: 0.1, 'ask-user': 0.1, 'inspect-context': 0.4, search: 0.1,
         'use-tool': 0.1, 'change-direction': 0.1, answer: 0.05, stop: 0.05,
       }),
+      focus: {
+        ...choice('verify-assumptions', {
+          'clarify-goal': 0.05, 'verify-assumptions': 0.4, 'inspect-local-context': 0.2,
+          'gather-external-evidence': 0.05, 'compare-options': 0.1, 'recover-tool': 0.05,
+          'synthesize-evidence': 0.1, 'answer-directly': 0.05,
+        }),
+        confidence: 0.6,
+      },
     },
   }
 }

@@ -52,6 +52,17 @@ export interface JevLatestSessionSummary {
     readonly turn?: number
     readonly followedBySuccess: boolean
   } | null
+  readonly skips: number
+  readonly latestSkip: {
+    readonly turn: number
+    readonly step: number
+    readonly nodeType: 'task-intake' | 'missing-information' | 'direction-selection' | 'tool-recovery' | 'progress-check' | 'pre-conclusion'
+    readonly reason: 'simple-task' | 'insufficient-complexity' | 'cooldown' | 'session-call-limit' | 'token-budget' | 'low-confidence-backoff' | 'provider-backoff' | 'deadline-backoff'
+    readonly usedTokens: number
+    readonly tokenBudget: number
+  } | null
+  readonly failureCandidates: number
+  readonly failurePairReady: boolean
 }
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -109,6 +120,17 @@ const summary = z.object({
     turn: z.number().int().nonnegative().optional(),
     followedBySuccess: z.boolean(),
   }).nullable(),
+  skips: z.number().int().nonnegative(),
+  latestSkip: z.object({
+    turn: z.number().int().nonnegative(),
+    step: z.number().int().nonnegative(),
+    nodeType: z.enum(['task-intake', 'missing-information', 'direction-selection', 'tool-recovery', 'progress-check', 'pre-conclusion']),
+    reason: z.enum(['simple-task', 'insufficient-complexity', 'cooldown', 'session-call-limit', 'token-budget', 'low-confidence-backoff', 'provider-backoff', 'deadline-backoff']),
+    usedTokens: z.number().int().nonnegative(),
+    tokenBudget: z.number().int().positive(),
+  }).nullable(),
+  failureCandidates: z.number().int().nonnegative(),
+  failurePairReady: z.boolean(),
 })
 
 /** Remote descriptors mounted by the browser half and registered by the Host Typert artifact. */
@@ -151,7 +173,8 @@ export const TYPERT_REMOTE = createTypertRemoteInfo({
               sessionId: { type: 'string' }, calls: { type: 'integer' }, successes: { type: 'integer' },
               providerSuccesses: { type: 'integer' }, validBriefs: { type: 'integer' }, injectedAdvisories: { type: 'integer' },
               failures: { type: 'integer' }, pending: { type: 'integer' }, inputTokens: { type: 'integer' },
-              outputTokens: { type: 'integer' }, totalTokens: { type: 'integer' }, totalLatencyMs: { type: 'number' },
+              outputTokens: { type: 'integer' }, totalTokens: { type: 'integer' }, totalLatencyMs: { type: 'number' }, skips: { type: 'integer' },
+              failureCandidates: { type: 'integer' }, failurePairReady: { type: 'boolean' },
               latestCall: {
                 oneOf: [
                   { type: 'null' },
@@ -175,7 +198,18 @@ export const TYPERT_REMOTE = createTypertRemoteInfo({
                   }, required: ['code', 'stage', 'retryable', 'responseReceived', 'followedBySuccess'], additionalProperties: false },
                 ],
               },
-            }, required: ['sessionId', 'calls', 'providerSuccesses', 'validBriefs', 'injectedAdvisories', 'successes', 'failures', 'pending', 'inputTokens', 'outputTokens', 'totalTokens', 'totalLatencyMs', 'latestCall', 'latestFailure'], additionalProperties: false },
+              latestSkip: {
+                oneOf: [
+                  { type: 'null' },
+                  { type: 'object', properties: {
+                    turn: { type: 'integer' }, step: { type: 'integer' },
+                    nodeType: { enum: ['task-intake', 'missing-information', 'direction-selection', 'tool-recovery', 'progress-check', 'pre-conclusion'] },
+                    reason: { enum: ['simple-task', 'insufficient-complexity', 'cooldown', 'session-call-limit', 'token-budget', 'low-confidence-backoff', 'provider-backoff', 'deadline-backoff'] },
+                    usedTokens: { type: 'integer' }, tokenBudget: { type: 'integer' },
+                  }, required: ['turn', 'step', 'nodeType', 'reason', 'usedTokens', 'tokenBudget'], additionalProperties: false },
+                ],
+              },
+            }, required: ['sessionId', 'calls', 'providerSuccesses', 'validBriefs', 'injectedAdvisories', 'successes', 'failures', 'pending', 'inputTokens', 'outputTokens', 'totalTokens', 'totalLatencyMs', 'latestCall', 'latestFailure', 'skips', 'latestSkip', 'failureCandidates', 'failurePairReady'], additionalProperties: false },
           ],
         },
       },

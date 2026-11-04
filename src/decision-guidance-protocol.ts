@@ -13,7 +13,7 @@ import type { JevContent } from './types.js'
 /** Stable interpretation rules for one decision-guidance result. */
 export const DECISION_GUIDANCE_STRATEGY_VERSION = 'jev-decision-guidance-v1'
 /** Stable node-specific question sets used by the current decision-guidance protocol. */
-export const DECISION_GUIDANCE_QUESTION_VERSION = 'decision-brief-v2'
+export const DECISION_GUIDANCE_QUESTION_VERSION = 'decision-brief-v3'
 
 /** Agent analysis point that caused one Jev evaluation. */
 export type DecisionNodeType =
@@ -71,17 +71,17 @@ export interface DecisionDirection {
 
 /** Short structured advice derived from the question set selected for one analysis node. */
 export interface JevDecisionBrief {
-  readonly version: 2
+  readonly version: 3
   readonly nodeType: DecisionNodeType
   readonly taskType?: DecisionTaskType
-  readonly informationSufficient: boolean
-  readonly informationSufficientProbability: number
-  readonly candidateDirections: readonly DecisionDirection[]
-  readonly recommendedAction: DecisionRecommendedAction
-  readonly focus: DecisionFocus
+  readonly informationSufficient?: boolean
+  readonly informationSufficientProbability?: number
+  readonly candidateDirections?: readonly DecisionDirection[]
+  readonly recommendedAction?: DecisionRecommendedAction
+  readonly focus?: DecisionFocus
   readonly avoid?: DecisionAvoid
   readonly riskLevel?: DecisionRisk
-  readonly ambiguity: DecisionAmbiguity
+  readonly ambiguity?: DecisionAmbiguity
   readonly confidence: number
   readonly accepted: boolean
   readonly reasons: readonly DecisionBriefRejectionReason[]
@@ -137,25 +137,36 @@ export function createDecisionBrief(
   result: DecisionResult,
   minimumConfidence: number,
 ): JevDecisionBrief {
-  const informationSufficient = boolean(result.answers, 'informationSufficient')
+  const informationSufficient = includesInformation(nodeType) ? boolean(result.answers, 'informationSufficient') : undefined
   const action = choice(result.answers, 'recommendedAction', RECOMMENDED_ACTIONS)
-  const focus = choice(result.answers, 'focus', FOCUS_OPTIONS)
-  const ambiguity = choice(result.answers, 'ambiguity', AMBIGUITY_OPTIONS)
+  const focus = includesFocus(nodeType) ? choice(result.answers, 'focus', FOCUS_OPTIONS) : undefined
+  const ambiguity = includesAmbiguity(nodeType) ? choice(result.answers, 'ambiguity', AMBIGUITY_OPTIONS) : undefined
   const avoid = includesAvoid(nodeType) ? choice(result.answers, 'avoid', AVOID_OPTIONS) : undefined
   const risk = includesRisk(nodeType) ? choice(result.answers, 'risk', RISK_OPTIONS) : undefined
-  const confidence = Math.min(action.confidence, focus.confidence)
+  const confidence = Math.max(
+    informationSufficient?.confidence ?? 0,
+    action.confidence,
+    focus?.confidence ?? 0,
+    ambiguity?.confidence ?? 0,
+    avoid?.confidence ?? 0,
+    risk?.confidence ?? 0,
+  )
   const accepted = confidence >= minimumConfidence
   return {
-    version: 2,
+    version: 3,
     nodeType,
-    informationSufficient: informationSufficient.value,
-    informationSufficientProbability: informationSufficient.probability,
-    candidateDirections: rankedDirections(focus.probabilities),
-    recommendedAction: action.value,
-    focus: focus.value,
-    ...avoid === undefined ? {} : { avoid: avoid.value },
-    ...risk === undefined ? {} : { riskLevel: risk.value },
-    ambiguity: ambiguity.value,
+    ...informationSufficient === undefined || informationSufficient.confidence < minimumConfidence ? {} : {
+      informationSufficient: informationSufficient.value,
+      informationSufficientProbability: informationSufficient.probability,
+    },
+    ...action.confidence < minimumConfidence ? {} : { recommendedAction: action.value },
+    ...focus === undefined || focus.confidence < minimumConfidence ? {} : {
+      candidateDirections: rankedDirections(focus.probabilities),
+      focus: focus.value,
+    },
+    ...avoid === undefined || avoid.confidence < minimumConfidence ? {} : { avoid: avoid.value },
+    ...risk === undefined || risk.confidence < minimumConfidence ? {} : { riskLevel: risk.value },
+    ...ambiguity === undefined || ambiguity.confidence < minimumConfidence ? {} : { ambiguity: ambiguity.value },
     confidence,
     accepted,
     reasons: accepted ? [] : ['confidence-below-threshold'],
@@ -178,43 +189,43 @@ const AMBIGUITY_OPTIONS = ['low', 'medium', 'high'] as const
 const CORE_QUESTIONS = {
   informationSufficient: {
     type: 'boolean',
-    instructions: 'Is the available information sufficient for the next reliable analytical action?',
+    instructions: 'Is available information sufficient for the next reliable action?',
   },
   recommendedAction: {
     type: 'choice',
-    instructions: 'Choose the next action that most directly reduces uncertainty or completes the analysis.',
+    instructions: 'Choose the next action.',
     options: {
-      continue: 'Continue the current analysis direction.',
-      'ask-user': 'Ask the user for material missing information.',
-      'inspect-context': 'Inspect available local context before drawing a conclusion.',
-      search: 'Gather current or external evidence.',
-      'use-tool': 'Use an available tool to obtain necessary evidence.',
-      'change-direction': 'Stop the current line of investigation and test another direction.',
-      answer: 'The evidence supports answering now.',
-      stop: 'Stop because continuation is unsafe or cannot produce a reliable result.',
+      continue: 'Continue analysis.',
+      'ask-user': 'Ask for missing information.',
+      'inspect-context': 'Inspect supplied context.',
+      search: 'Gather external evidence.',
+      'use-tool': 'Use a tool for evidence.',
+      'change-direction': 'Test another direction.',
+      answer: 'Answer now.',
+      stop: 'Stop; reliable progress is unavailable.',
     },
   },
   focus: {
     type: 'choice',
-    instructions: 'Choose the most useful analysis direction for the next step.',
+    instructions: 'Choose the most useful analysis direction.',
     options: {
-      'clarify-goal': 'Resolve the intended outcome or constraints.',
-      'verify-assumptions': 'Test assumptions that materially affect the result.',
-      'inspect-local-context': 'Read the supplied files, state, or prior evidence.',
-      'gather-external-evidence': 'Find relevant current or external evidence.',
-      'compare-options': 'Compare viable alternatives against explicit criteria.',
-      'recover-tool': 'Diagnose a failed or unproductive tool action.',
-      'synthesize-evidence': 'Combine established evidence into a conclusion.',
-      'answer-directly': 'Respond without further exploration.',
+      'clarify-goal': 'Clarify outcome or constraints.',
+      'verify-assumptions': 'Test material assumptions.',
+      'inspect-local-context': 'Inspect supplied evidence.',
+      'gather-external-evidence': 'Gather external evidence.',
+      'compare-options': 'Compare alternatives.',
+      'recover-tool': 'Recover a failed tool action.',
+      'synthesize-evidence': 'Synthesize evidence.',
+      'answer-directly': 'Answer without exploration.',
     },
   },
   ambiguity: {
     type: 'choice',
-    instructions: 'Classify unresolved ambiguity that can change the correct next action.',
+    instructions: 'Classify ambiguity that can change the next action.',
     options: {
-      low: 'The next action is clear.',
+      low: 'Next action is clear.',
       medium: 'A reversible default can continue.',
-      high: 'The user must clarify before reliable progress.',
+      high: 'Clarification is required.',
     },
   },
 } satisfies Readonly<Record<string, DecisionQuestion>>
@@ -249,18 +260,36 @@ const RISK_QUESTION = {
 function questionsForNode(nodeType: DecisionNodeType): Readonly<Record<string, DecisionQuestion>> {
   switch (nodeType) {
     case 'task-intake':
-    case 'missing-information':
     case 'direction-selection':
-      return CORE_QUESTIONS
+      return withoutAmbiguity(CORE_QUESTIONS)
+    case 'missing-information':
+      return withoutFocus(CORE_QUESTIONS)
     case 'progress-check':
-      return { ...CORE_QUESTIONS, ...AVOID_QUESTION }
+      return { ...withoutInformationAndAmbiguity(CORE_QUESTIONS), ...AVOID_QUESTION }
     case 'tool-recovery':
-      return { ...CORE_QUESTIONS, ...AVOID_QUESTION, ...RISK_QUESTION }
+      return { ...withoutInformationAndAmbiguity(CORE_QUESTIONS), ...AVOID_QUESTION, ...RISK_QUESTION }
     case 'pre-conclusion':
-      return { ...CORE_QUESTIONS, ...RISK_QUESTION }
+      return { ...withoutFocusAndAmbiguity(CORE_QUESTIONS), ...RISK_QUESTION }
     default:
       return assertNever(nodeType)
   }
+}
+
+function withoutAmbiguity({ ambiguity: _ambiguity, ...questions }: typeof CORE_QUESTIONS) { return questions }
+function withoutFocus({ focus: _focus, ...questions }: typeof CORE_QUESTIONS) { return questions }
+function withoutInformationAndAmbiguity({ informationSufficient: _information, ambiguity: _ambiguity, ...questions }: typeof CORE_QUESTIONS) { return questions }
+function withoutFocusAndAmbiguity({ focus: _focus, ambiguity: _ambiguity, ...questions }: typeof CORE_QUESTIONS) { return questions }
+
+function includesInformation(nodeType: DecisionNodeType): boolean {
+  return nodeType === 'task-intake' || nodeType === 'missing-information' || nodeType === 'direction-selection' || nodeType === 'pre-conclusion'
+}
+
+function includesFocus(nodeType: DecisionNodeType): boolean {
+  return nodeType !== 'missing-information' && nodeType !== 'pre-conclusion'
+}
+
+function includesAmbiguity(nodeType: DecisionNodeType): boolean {
+  return nodeType === 'missing-information'
 }
 
 function includesAvoid(nodeType: DecisionNodeType): boolean {
@@ -306,7 +335,7 @@ function isProbability(value: number | undefined): value is number {
 function invalidResult(): never {
   throw new DecisionGuidanceProtocolError(
     'DECISION_GUIDANCE_INVALID_RESULT',
-    'Jev returned a result that does not match decision-brief-v2',
+    'Jev returned a result that does not match decision-brief-v3',
   )
 }
 

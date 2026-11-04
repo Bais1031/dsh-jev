@@ -10,6 +10,12 @@ import {
 } from '../src/decision-guidance-shadow.js'
 import { decisionProviderName, type DecisionResult } from '../src/decision-types.js'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test-runtime-context': { readonly kind: 'test-runtime-context' }
+  }
+}
+
 const ACTUAL_ROUTE = { provider: 'main', model: 'selected' } as const
 
 describe('decision guidance Shadow integration', () => {
@@ -26,9 +32,41 @@ describe('decision guidance Shadow integration', () => {
       await propose(ctx, agent, 1, 1, scenario.text)
       expect(await request(ctx, agent, 1, 1)).toBe(ACTUAL_ROUTE)
       expect(decide).not.toHaveBeenCalled()
-      expect(records(session)).toEqual([])
+      if (scenario.mode === 'off') expect(records(session)).toEqual([])
+      else expect(records(session)).toEqual([
+        expect.objectContaining({
+          type: 'plugin:dsh-jev/decision-skip',
+          data: expect.objectContaining({ reason: 'insufficient-complexity' }),
+        }),
+      ])
       await ctx.fiber.dispose()
     }
+  })
+
+  it('records a simple early-node skip without dispatching Jev', async () => {
+    const ctx = new Context()
+    const session = Session.create(SessionId('simple-direction-skip'))
+    const agent = { session } as Agent
+    const decide = vi.fn(async () => result())
+    installDecisionGuidanceShadow(ctx, { decide }, options('advisory', { minimumTaskInputCharacters: 200 }))
+
+    const decision = await propose(
+      ctx,
+      agent,
+      1,
+      1,
+      'We have one day. Choose option A to repair a login incident or option B to build a feature.',
+    )
+
+    expect(decision.kind === 'enter' && decision.messages).toHaveLength(1)
+    expect(decide).not.toHaveBeenCalled()
+    expect(records(session)).toEqual([
+      expect.objectContaining({
+        type: 'plugin:dsh-jev/decision-skip',
+        data: expect.objectContaining({ nodeType: 'direction-selection', reason: 'simple-task' }),
+      }),
+    ])
+    await ctx.fiber.dispose()
   })
 
   it('records a paired brief while preserving the exact downstream route object', async () => {
@@ -49,7 +87,7 @@ describe('decision guidance Shadow integration', () => {
       type: 'plugin:dsh-jev/decision-request',
       data: {
         strategyVersion: 'jev-decision-guidance-v1',
-        questionVersion: 'decision-brief-v2',
+        questionVersion: 'decision-brief-v3',
         mode: 'shadow',
         nodeType: 'direction-selection',
         trigger: { reasons: ['multiple-direction-language'] },
@@ -117,6 +155,33 @@ describe('decision guidance Shadow integration', () => {
         request: { state: { content: 'Anal' } },
       },
     })
+    await ctx.fiber.dispose()
+  })
+
+  it('records only direct user text when runtime context enters the same step', async () => {
+    const ctx = new Context()
+    const session = Session.create(SessionId('shadow-user-source'))
+    const agent = { session } as Agent
+    const decide = vi.fn(async () => result())
+    installDecisionGuidanceShadow(ctx, { decide }, options('shadow'))
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'Compare both architecture options.' }],
+      source: { kind: 'user' },
+    })
+    const runtime = createUserMessage({
+      content: [{ type: 'text', text: 'Time sampled while preparing this turn.' }],
+      source: { kind: 'test-runtime-context' },
+    })
+
+    await proposeMessages(ctx, agent, 1, 1, [runtime, user])
+
+    expect(records(session)[0]).toMatchObject({
+      data: {
+        inputSummary: { messageCount: 1, textCharacters: 34, includedCharacters: 34, truncated: false },
+        request: { state: { content: 'Compare both architecture options.' } },
+      },
+    })
+    expect(JSON.stringify(records(session))).not.toContain('Time sampled')
     await ctx.fiber.dispose()
   })
 
@@ -261,11 +326,23 @@ async function propose(
   const messages = text.length === 0
     ? []
     : [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })]
+  return await proposeMessages(ctx, agent, turn, step, messages, signal)
+}
+
+async function proposeMessages(
+  ctx: Context,
+  agent: Agent,
+  turn: number,
+  step: number,
+  messages: readonly ReturnType<typeof createUserMessage>[],
+  signal: AbortSignal = new AbortController().signal,
+): Promise<PreStepDecision> {
+  const entered = [...messages]
   return await ctx.waterfall(
     ctx as never,
     'agent/pre-step',
-    { agent, messages, turn, step, signal },
-    () => Promise.resolve({ kind: 'enter' as const, messages }),
+    { agent, messages: entered, turn, step, signal },
+    () => Promise.resolve({ kind: 'enter' as const, messages: entered }),
   )
 }
 
@@ -283,6 +360,7 @@ function options(mode: DecisionGuidanceMode, overrides: {
   readonly deadlineMs?: number
   readonly includeToolResultSummaries?: boolean
   readonly toolResultSummaryCharacters?: number
+  readonly minimumTaskInputCharacters?: number
 } = {}) {
   return {
     mode: () => mode,
@@ -295,8 +373,13 @@ function options(mode: DecisionGuidanceMode, overrides: {
     ] as const,
     cooldownSteps: () => 0,
     maximumCallsPerSession: () => 8,
+    maximumTokensPerSession: () => 8_000,
+    lowConfidenceBackoffThreshold: () => 2,
+    providerFailureBackoffThreshold: () => 2,
+    deadlineBackoffThreshold: () => 2,
+    backoffAllowsRecoveryNodes: () => true,
     progressCheckStep: () => 4,
-    minimumTaskInputCharacters: () => 200,
+    minimumTaskInputCharacters: () => overrides.minimumTaskInputCharacters ?? 1,
     includeToolResultSummaries: () => overrides.includeToolResultSummaries ?? false,
     toolResultSummaryCharacters: () => overrides.toolResultSummaryCharacters ?? 1_000,
   }

@@ -3,6 +3,8 @@
 import { pluginRecordOf, type Session } from '@deepseek-ai/dsh-session'
 import type { DecisionNodeType } from './decision-guidance-protocol.js'
 import type { DecisionGuidanceFailureStage, DecisionGuidanceMode } from './decision-guidance-shadow.js'
+import type { DecisionTriggerSkipReason } from './decision-guidance-trigger.js'
+import { isFailureCandidateRecord } from './failure-capture.js'
 
 /** Aggregated usage for successful Jev calls. */
 export interface DecisionGuidanceUsageSummary {
@@ -58,6 +60,19 @@ export interface DecisionGuidanceSessionSummary {
   readonly totalLatencyMs: number
   readonly latestCall: DecisionGuidanceLatestCallSummary | null
   readonly latestFailure: DecisionGuidanceFailureSummary | null
+  readonly skips: number
+  readonly latestSkip: {
+    readonly turn: number
+    readonly step: number
+    readonly nodeType: DecisionNodeType
+    readonly reason: DecisionTriggerSkipReason
+    readonly usedTokens: number
+    readonly tokenBudget: number
+  } | null
+  /** Distinct Assistant checkpoints explicitly corrected by the user. */
+  readonly failureCandidates: number
+  /** Whether at least two distinct natural failures are available for paired evaluation. */
+  readonly failurePairReady: boolean
   readonly byNode: Readonly<Partial<Record<DecisionNodeType, DecisionGuidanceNodeSummary>>>
 }
 
@@ -78,6 +93,9 @@ export function summarizeDecisionGuidance(session: Session): DecisionGuidanceSes
   let latestFailure: DecisionGuidanceFailureSummary | null = null
   let latestFailureSeq = -1
   let latestSuccessSeq = -1
+  let skips = 0
+  let latestSkip: DecisionGuidanceSessionSummary['latestSkip'] = null
+  const failureCheckpoints = new Set<number>()
 
   for (const event of session.snapshotEvents()) {
     const record = pluginRecordOf(event)
@@ -109,6 +127,11 @@ export function summarizeDecisionGuidance(session: Session): DecisionGuidanceSes
       }
     } else if (record?.type === 'plugin:dsh-jev/decision-advisory' && isAdvisoryData(record.data)) {
       advisoryRequests.add(record.data.requestSeq)
+    } else if (record?.type === 'plugin:dsh-jev/decision-skip' && isSkipData(record.data)) {
+      skips += 1
+      latestSkip = record.data
+    } else if (record?.type === 'plugin:dsh-jev/failure-candidate' && isFailureCandidateRecord(record.data)) {
+      failureCheckpoints.add(record.data.checkpointSeq)
     }
   }
 
@@ -151,8 +174,34 @@ export function summarizeDecisionGuidance(session: Session): DecisionGuidanceSes
     totalLatencyMs,
     latestCall: latestCall(requests, outcomes, advisoryRequests),
     latestFailure,
+    skips,
+    latestSkip,
+    failureCandidates: failureCheckpoints.size,
+    failurePairReady: failureCheckpoints.size >= 2,
     byNode,
   }
+}
+
+function isSkipData(data: unknown): data is NonNullable<DecisionGuidanceSessionSummary['latestSkip']> {
+  return typeof data === 'object'
+    && data !== null
+    && 'turn' in data && Number.isSafeInteger(data.turn)
+    && 'step' in data && Number.isSafeInteger(data.step)
+    && 'nodeType' in data && isDecisionNodeType(data.nodeType)
+    && 'reason' in data && isSkipReason(data.reason)
+    && 'usedTokens' in data && typeof data.usedTokens === 'number' && Number.isSafeInteger(data.usedTokens) && data.usedTokens >= 0
+    && 'tokenBudget' in data && typeof data.tokenBudget === 'number' && Number.isSafeInteger(data.tokenBudget) && data.tokenBudget >= 1
+}
+
+function isSkipReason(value: unknown): value is DecisionTriggerSkipReason {
+  return value === 'simple-task'
+    || value === 'insufficient-complexity'
+    || value === 'cooldown'
+    || value === 'session-call-limit'
+    || value === 'token-budget'
+    || value === 'low-confidence-backoff'
+    || value === 'provider-backoff'
+    || value === 'deadline-backoff'
 }
 
 interface SummaryRequestData {

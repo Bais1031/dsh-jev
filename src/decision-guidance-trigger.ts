@@ -15,6 +15,32 @@ export type DecisionTriggerReason =
   | 'complex-task-language'
   | 'task-input-size'
 
+/** Stable reason why a candidate node did not reserve a Jev call. */
+export type DecisionTriggerSkipReason =
+  | 'simple-task'
+  | 'insufficient-complexity'
+  | 'cooldown'
+  | 'session-call-limit'
+  | 'token-budget'
+  | 'low-confidence-backoff'
+  | 'provider-backoff'
+  | 'deadline-backoff'
+
+/** Content-free result that updates one Agent's automatic-guidance budget and backoff state. */
+export type DecisionTriggerObservation =
+  | {
+    readonly kind: 'success'
+    readonly accepted: boolean
+    readonly inputTokens: number
+    readonly outputTokens: number
+  }
+  | {
+    readonly kind: 'failure'
+    readonly stage: 'provider' | 'deadline' | 'cancellation' | 'projection' | 'unexpected'
+    readonly inputTokens?: number
+    readonly outputTokens?: number
+  }
+
 /** Non-content session signals used by the deterministic trigger rules. */
 export interface DecisionTriggerSignals {
   readonly turn: number
@@ -36,11 +62,29 @@ export interface DecisionTrigger {
   readonly toolResultTextCharacters: number
 }
 
+/** Content-free outcome of deterministic node selection and call budgeting. */
+export type DecisionTriggerGateResult =
+  | { readonly kind: 'trigger'; readonly trigger: DecisionTrigger }
+  | {
+    readonly kind: 'skip'
+    readonly reason: DecisionTriggerSkipReason
+    readonly turn: number
+    readonly step: number
+    readonly nodeType: DecisionNodeType
+    readonly signals: DecisionTriggerSignals
+  }
+  | { readonly kind: 'none' }
+
 /** Live settings used by the trigger gate for each proposed step. */
 export interface DecisionTriggerOptions {
   readonly enabledNodes: () => readonly DecisionNodeType[]
   readonly cooldownSteps: () => number
   readonly maximumCallsPerSession: () => number
+  readonly maximumTokensPerSession: () => number
+  readonly lowConfidenceBackoffThreshold: () => number
+  readonly providerFailureBackoffThreshold: () => number
+  readonly deadlineBackoffThreshold: () => number
+  readonly backoffAllowsRecoveryNodes: () => boolean
   readonly progressCheckStep: () => number
   readonly minimumTaskInputCharacters: () => number
   readonly includeToolResultSummaries: () => boolean
@@ -50,6 +94,10 @@ export interface DecisionTriggerOptions {
 interface AgentTriggerState {
   ordinal: number
   calls: number
+  tokens: number
+  consecutiveLowConfidence: number
+  consecutiveProviderFailures: number
+  consecutiveDeadlines: number
   lastCallOrdinal?: number
   lastTurn?: number
   lastStep?: number
@@ -77,15 +125,22 @@ export class DecisionTriggerGate {
     step: number,
     messages: readonly UserMessage[],
     options: DecisionTriggerOptions,
-  ): DecisionTrigger | undefined {
-    const state = this.#states.get(agent) ?? { ordinal: 0, calls: 0 }
-    if (state.lastTurn === turn && state.lastStep === step) return undefined
+  ): DecisionTriggerGateResult {
+    const state = this.#states.get(agent) ?? {
+      ordinal: 0,
+      calls: 0,
+      tokens: 0,
+      consecutiveLowConfidence: 0,
+      consecutiveProviderFailures: 0,
+      consecutiveDeadlines: 0,
+    }
+    if (state.lastTurn === turn && state.lastStep === step) return { kind: 'none' }
     state.ordinal += 1
     state.lastTurn = turn
     state.lastStep = step
     this.#states.set(agent, state)
 
-    const trigger = selectDecisionTrigger(
+    const selection = evaluateDecisionTrigger(
       agent.session,
       turn,
       step,
@@ -96,13 +151,54 @@ export class DecisionTriggerGate {
       options.includeToolResultSummaries(),
       options.toolResultSummaryCharacters(),
     )
-    if (trigger === undefined || state.calls >= options.maximumCallsPerSession()) return undefined
+    if (selection.kind !== 'trigger') return selection
+    const trigger = selection.trigger
+    if (state.calls >= options.maximumCallsPerSession()) {
+      return skipResult(trigger, 'session-call-limit')
+    }
+    if (state.tokens >= options.maximumTokensPerSession()) {
+      return skipResult(trigger, 'token-budget')
+    }
+    const recoveryAllowed = options.backoffAllowsRecoveryNodes() && !isEarlyNode(trigger.nodeType)
+    if (!recoveryAllowed && state.consecutiveLowConfidence >= options.lowConfidenceBackoffThreshold()) {
+      return skipResult(trigger, 'low-confidence-backoff')
+    }
+    if (!recoveryAllowed && state.consecutiveProviderFailures >= options.providerFailureBackoffThreshold()) {
+      return skipResult(trigger, 'provider-backoff')
+    }
+    if (!recoveryAllowed && state.consecutiveDeadlines >= options.deadlineBackoffThreshold()) {
+      return skipResult(trigger, 'deadline-backoff')
+    }
     if (state.lastCallOrdinal !== undefined && state.ordinal - state.lastCallOrdinal <= options.cooldownSteps()) {
-      return undefined
+      return skipResult(trigger, 'cooldown')
     }
     state.calls += 1
     state.lastCallOrdinal = state.ordinal
-    return trigger
+    return { kind: 'trigger', trigger }
+  }
+
+  /**
+   * Account for a completed reserved call without retaining request or response content.
+   * @param agent - Agent that owns the Session-scoped counters.
+   * @param observation - Usage and stable outcome category from the completed call.
+   */
+  observe(agent: Agent, observation: DecisionTriggerObservation): void {
+    const state = this.#states.get(agent)
+    if (state === undefined) return
+    state.tokens += (observation.inputTokens ?? 0) + (observation.outputTokens ?? 0)
+    if (observation.kind === 'success') {
+      state.consecutiveProviderFailures = 0
+      state.consecutiveDeadlines = 0
+      state.consecutiveLowConfidence = observation.accepted ? 0 : state.consecutiveLowConfidence + 1
+      return
+    }
+    if (observation.stage === 'provider') state.consecutiveProviderFailures += 1
+    else if (observation.stage === 'deadline') state.consecutiveDeadlines += 1
+  }
+
+  /** @param agent - Agent whose content-free token usage is requested. @returns Recorded Jev tokens for this live Agent. */
+  usedTokens(agent: Agent): number {
+    return this.#states.get(agent)?.tokens ?? 0
   }
 
   /** @param agent - Agent whose completed lifecycle state can be discarded. */
@@ -133,8 +229,34 @@ export function selectDecisionTrigger(
   includeToolResultSummaries = false,
   toolResultSummaryCharacters = 0,
 ): DecisionTrigger | undefined {
-  const text = messageText(messages)
-  if (containsLikelyCredential(text)) return undefined
+  const result = evaluateDecisionTrigger(
+    session,
+    turn,
+    step,
+    messages,
+    enabledNodes,
+    progressCheckStep,
+    minimumTaskInputCharacters,
+    includeToolResultSummaries,
+    toolResultSummaryCharacters,
+  )
+  return result.kind === 'trigger' ? result.trigger : undefined
+}
+
+function evaluateDecisionTrigger(
+  session: Session,
+  turn: number,
+  step: number,
+  messages: readonly UserMessage[],
+  enabledNodes: ReadonlySet<DecisionNodeType>,
+  progressCheckStep: number,
+  minimumTaskInputCharacters: number,
+  includeToolResultSummaries = false,
+  toolResultSummaryCharacters = 0,
+): DecisionTriggerGateResult {
+  const directUsers = messages.filter(message => message.source.kind === 'user')
+  const text = messageText(directUsers)
+  if (containsLikelyCredential(text)) return { kind: 'none' }
   const previous = previousToolSignals(
     session,
     turn,
@@ -144,7 +266,7 @@ export function selectDecisionTrigger(
   const signals: DecisionTriggerSignals = {
     turn,
     step,
-    admittedMessageCount: messages.length,
+    admittedMessageCount: directUsers.length,
     textCharacters: Array.from(text).length,
     previousToolResults: previous.results,
     previousToolFailures: previous.failures,
@@ -173,18 +295,34 @@ export function selectDecisionTrigger(
     if (reasons.length > 0) candidates.push({ nodeType: 'task-intake', reasons })
   }
   const selected = candidates.find(candidate => enabledNodes.has(candidate.nodeType))
-  return selected === undefined ? undefined : {
+  if (selected === undefined) return { kind: 'none' }
+  const trigger: DecisionTrigger = {
     ...selected,
     signals,
     text,
     toolResultText: previous.text,
     toolResultTextCharacters: previous.textCharacters,
   }
+  if (isEarlyNode(selected.nodeType) && !earlyNodeEligible(text, signals.textCharacters, minimumTaskInputCharacters)) {
+    return skipResult(
+      trigger,
+      signals.textCharacters < minimumTaskInputCharacters ? 'simple-task' : 'insufficient-complexity',
+    )
+  }
+  return { kind: 'trigger', trigger }
 }
 
-const MISSING_INFORMATION_PATTERN = /(?:不确定|不知道|缺少|未提供|需要澄清|信息不足|unclear|unknown|missing|not provided|need clarification|which one)/iu
+const MISSING_INFORMATION_PATTERN = /(?:不确定|不知道|不清楚|尚不清楚|缺少|缺乏|未提供|尚未提供|(?:没有提供|没提供)(?:了|当前|相关|足够|任何|具体|必要|所需|[，。；、\s]|$)|需要澄清|信息不足|unclear|unknown|missing|not provided|need clarification|which one)/iu
 const DIRECTION_SELECTION_PATTERN = /(?:比较|对比|选择|取舍|方案|路线|还是|versus|\bvs\.?\b|compare|choose|trade-?off|alternative|option)/iu
 const COMPLEX_TASK_PATTERN = /(?:分析|诊断|排查|调试|设计|架构|规划|审查|调查|analy[sz]e|diagnos|debug|design|architect|plan|review|investigat)/iu
+const MULTIPLE_CANDIDATES_PATTERN = /(?:(?:方案|选项)\s*[a-z0-9].*(?:方案|选项)\s*[a-z0-9]|两个|多个|both|multiple)/iu
+const HIGH_IMPACT_PATTERN = /(?:生产|线上|删除|付款|发布|凭证|权限|法律|医疗|production|delete|payment|publish|credential|permission|legal|medical)/iu
+const CONSTRAINT_PATTERNS = [
+  /(?:预算|费用|成本|budget|cost)/iu,
+  /(?:时间|截止|工期|停机|deadline|time|downtime)/iu,
+  /(?:隐私|安全|privacy|security)/iu,
+  /(?:维护|人力|团队|maintenance|staff|team)/iu,
+] as const
 const LIKELY_CREDENTIAL_PATTERN = /(?:\bsk-[a-z0-9_-]{8,}\b|\bbearer\s+[a-z0-9._~+/-]{8,}=?|\b(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----)/iu
 
 /** @param text - Candidate model-visible text. @returns Whether fixed credential patterns require skipping external analysis. */
@@ -200,6 +338,30 @@ function messageText(messages: readonly UserMessage[]): string {
     }
   }
   return segments.join('\n\n')
+}
+
+function isEarlyNode(nodeType: DecisionNodeType): boolean {
+  return nodeType === 'task-intake' || nodeType === 'missing-information' || nodeType === 'direction-selection'
+}
+
+function earlyNodeEligible(text: string, textCharacters: number, minimumCharacters: number): boolean {
+  if (textCharacters < minimumCharacters) return false
+  const multipleConstraints = CONSTRAINT_PATTERNS.filter(pattern => pattern.test(text)).length >= 2
+  return COMPLEX_TASK_PATTERN.test(text)
+    || MULTIPLE_CANDIDATES_PATTERN.test(text)
+    || HIGH_IMPACT_PATTERN.test(text)
+    || multipleConstraints
+}
+
+function skipResult(trigger: DecisionTrigger, reason: DecisionTriggerSkipReason): DecisionTriggerGateResult {
+  return {
+    kind: 'skip',
+    reason,
+    turn: trigger.signals.turn,
+    step: trigger.signals.step,
+    nodeType: trigger.nodeType,
+    signals: trigger.signals,
+  }
 }
 
 function previousToolSignals(session: Session, turn: number, step: number, textLimit: number): {

@@ -155,6 +155,17 @@ describe('DshJevConfigCardController', () => {
           responseReceived: false, providerCode: 'JEV_TIMEOUT', latencyMs: 16,
           turn: 1, followedBySuccess: true,
         },
+      skips: 1,
+      latestSkip: {
+        turn: 4,
+        step: 1,
+        nodeType: 'task-intake' as const,
+        reason: 'token-budget' as const,
+        usedTokens: 8_000,
+        tokenBudget: 8_000,
+      },
+      failureCandidates: 1,
+      failurePairReady: false,
       })),
     }
     const controller = new DshJevConfigCardController(scope, credentialStub(), status)

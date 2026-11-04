@@ -28,6 +28,11 @@ export interface DshJevSettings {
   readonly decisionNodes?: string[]
   readonly decisionCooldownSteps?: number
   readonly decisionMaxCallsPerSession?: number
+  readonly decisionMaxTokensPerSession?: number
+  readonly decisionLowConfidenceBackoffThreshold?: number
+  readonly decisionProviderFailureBackoffThreshold?: number
+  readonly decisionDeadlineBackoffThreshold?: number
+  readonly decisionBackoffAllowsRecoveryNodes?: boolean
   readonly decisionProgressCheckStep?: number
   readonly decisionMinimumTaskInputCharacters?: number
   readonly decisionMaxInputCharacters?: number
@@ -35,6 +40,7 @@ export interface DshJevSettings {
   readonly decisionMinimumConfidence?: number
   readonly decisionIncludeToolResultSummaries?: boolean
   readonly decisionToolResultSummaryCharacters?: number
+  readonly failureCaptureEnabled?: boolean
 }
 
 /** Non-secret credential information returned to the page. */
@@ -80,6 +86,11 @@ export interface DshJevConfigCardState extends SettingsFormShell {
   readonly decisionNodes: SettingsFieldState
   readonly decisionCooldownSteps: SettingsFieldState
   readonly decisionMaxCallsPerSession: SettingsFieldState
+  readonly decisionMaxTokensPerSession: SettingsFieldState
+  readonly decisionLowConfidenceBackoffThreshold: SettingsFieldState
+  readonly decisionProviderFailureBackoffThreshold: SettingsFieldState
+  readonly decisionDeadlineBackoffThreshold: SettingsFieldState
+  readonly decisionBackoffAllowsRecoveryNodes: SettingsFieldState
   readonly decisionProgressCheckStep: SettingsFieldState
   readonly decisionMinimumTaskInputCharacters: SettingsFieldState
   readonly decisionMaxInputCharacters: SettingsFieldState
@@ -87,6 +98,7 @@ export interface DshJevConfigCardState extends SettingsFormShell {
   readonly decisionMinimumConfidence: SettingsFieldState
   readonly decisionIncludeToolResultSummaries: SettingsFieldState
   readonly decisionToolResultSummaryCharacters: SettingsFieldState
+  readonly failureCaptureEnabled: SettingsFieldState
   readonly connectionTest: ConnectionTestState
   readonly latestSessionSummary: JevLatestSessionSummary | null
   readonly summaryLoading: boolean
@@ -155,6 +167,11 @@ export class DshJevConfigCardController {
       decisionNodes: this.form.field('decisionNodes'),
       decisionCooldownSteps: this.form.field('decisionCooldownSteps'),
       decisionMaxCallsPerSession: this.form.field('decisionMaxCallsPerSession'),
+      decisionMaxTokensPerSession: this.form.field('decisionMaxTokensPerSession'),
+      decisionLowConfidenceBackoffThreshold: this.form.field('decisionLowConfidenceBackoffThreshold'),
+      decisionProviderFailureBackoffThreshold: this.form.field('decisionProviderFailureBackoffThreshold'),
+      decisionDeadlineBackoffThreshold: this.form.field('decisionDeadlineBackoffThreshold'),
+      decisionBackoffAllowsRecoveryNodes: this.form.field('decisionBackoffAllowsRecoveryNodes'),
       decisionProgressCheckStep: this.form.field('decisionProgressCheckStep'),
       decisionMinimumTaskInputCharacters: this.form.field('decisionMinimumTaskInputCharacters'),
       decisionMaxInputCharacters: this.form.field('decisionMaxInputCharacters'),
@@ -162,6 +179,7 @@ export class DshJevConfigCardController {
       decisionMinimumConfidence: this.form.field('decisionMinimumConfidence'),
       decisionIncludeToolResultSummaries: this.form.field('decisionIncludeToolResultSummaries'),
       decisionToolResultSummaryCharacters: this.form.field('decisionToolResultSummaryCharacters'),
+      failureCaptureEnabled: this.form.field('failureCaptureEnabled'),
       connectionTest: this.connectionTest,
       latestSessionSummary: this.latestSessionSummary,
       summaryLoading: this.summaryLoading,
@@ -278,6 +296,11 @@ function fieldSpecs(): SettingsFieldSpec[] {
     ])),
     numberField('decisionCooldownSteps', value => Number.isInteger(value) && value >= 0 && value <= 100),
     numberField('decisionMaxCallsPerSession', value => Number.isInteger(value) && value >= 1 && value <= 1_000),
+    numberField('decisionMaxTokensPerSession', value => Number.isInteger(value) && value >= 1 && value <= 10_000_000),
+    numberField('decisionLowConfidenceBackoffThreshold', value => Number.isInteger(value) && value >= 1 && value <= 1_000),
+    numberField('decisionProviderFailureBackoffThreshold', value => Number.isInteger(value) && value >= 1 && value <= 1_000),
+    numberField('decisionDeadlineBackoffThreshold', value => Number.isInteger(value) && value >= 1 && value <= 1_000),
+    booleanField('decisionBackoffAllowsRecoveryNodes'),
     numberField('decisionProgressCheckStep', value => Number.isInteger(value) && value >= 2 && value <= 1_000),
     numberField('decisionMinimumTaskInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
     numberField('decisionMaxInputCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
@@ -285,6 +308,7 @@ function fieldSpecs(): SettingsFieldSpec[] {
     numberField('decisionMinimumConfidence', value => value >= 0 && value <= 1),
     booleanField('decisionIncludeToolResultSummaries'),
     numberField('decisionToolResultSummaryCharacters', value => Number.isInteger(value) && value >= 1 && value <= 100_000),
+    booleanField('failureCaptureEnabled'),
   ]
 }
 

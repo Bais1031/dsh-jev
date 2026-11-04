@@ -19,7 +19,7 @@ describe('decision-guidance Session summary', () => {
       requestSeq: success,
       status: 'success',
       brief: {
-        version: 2,
+        version: 3,
         nodeType: 'task-intake',
         taskType: 'analysis',
         informationSufficient: true,
@@ -84,6 +84,10 @@ describe('decision-guidance Session summary', () => {
         turn: 1,
         followedBySuccess: false,
       },
+      skips: 0,
+      latestSkip: null,
+      failureCandidates: 0,
+      failurePairReady: false,
       byNode: {
         'task-intake': { calls: 1, successes: 1, failures: 0 },
         'tool-recovery': { calls: 1, successes: 0, failures: 1 },
@@ -107,6 +111,10 @@ describe('decision-guidance Session summary', () => {
       totalLatencyMs: 0,
       latestCall: null,
       latestFailure: null,
+      skips: 0,
+      latestSkip: null,
+      failureCandidates: 0,
+      failurePairReady: false,
       byNode: {},
     })
   })
@@ -213,7 +221,7 @@ function request(
 ): DecisionGuidanceRequestRecord {
   return {
     strategyVersion: 'jev-decision-guidance-v1',
-    questionVersion: 'decision-brief-v2',
+    questionVersion: 'decision-brief-v3',
     mode,
     turn,
     step,
@@ -258,7 +266,7 @@ function request(
 
 function brief(accepted: boolean, confidence: number) {
   return {
-    version: 2 as const,
+    version: 3 as const,
     nodeType: 'task-intake' as const,
     informationSufficient: true,
     informationSufficientProbability: 0.9,

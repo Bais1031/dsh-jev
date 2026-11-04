@@ -41,6 +41,12 @@ Bundle 增加一个 `dsh-jev` 条目。依次打开**插件**、选择 **dsh-jev
       - progress-check
     decisionCooldownSteps: 3
     decisionMaxCallsPerSession: 8
+    decisionMaxTokensPerSession: 8000
+    failureCaptureEnabled: true
+    decisionLowConfidenceBackoffThreshold: 2
+    decisionProviderFailureBackoffThreshold: 2
+    decisionDeadlineBackoffThreshold: 2
+    decisionBackoffAllowsRecoveryNodes: true
     decisionProgressCheckStep: 4
     decisionMinimumTaskInputCharacters: 200
     decisionMaxInputCharacters: 6000
@@ -77,7 +83,7 @@ Bundle 增加一个 `dsh-jev` 条目。依次打开**插件**、选择 **dsh-jev
 
 库使用者可以调用 `summarizeDecisionGuidance(session)`，在本地汇总当前 Session 的调用、Jev 响应、有效简报、实际注入、token、延迟和节点分布；摘要不返回请求正文或答案。
 
-`decision-brief-v2` 按关键节点发送最小问题集。所有节点询问信息充分度、推荐动作、方向和歧义；`progress-check` 增加应避免行为，`pre-conclusion` 增加风险，`tool-recovery` 同时增加两者。`task-intake` 从七个问题缩减为四个问题。简报使用固定词汇并最多保留三个候选方向，不要求 Jev 输出隐藏思维过程或自由展开的长篇分析。问题数量减少已经由测试验证；真实 token 和任务效果仍需通过 Baseline、Shadow、Advisory 配对运行测量。
+`decision-brief-v3` 按关键节点发送三至四个问题，并缩短问题说明。早期节点只有在直接用户文本达到配置的字符阈值，且存在复杂分析、多候选、多约束或高影响信号时才调用 Jev；简单一步选择会在调用前跳过。简报只保留达到字段置信度阈值的固定协议值，因此信息充分度或歧义等强信号不会因另一个字段不稳定而全部丢弃。协议最多保留三个候选方向，不要求 Jev 输出隐藏思维过程或自由展开的长篇分析。序列化体积下降已经由测试验证；真实 token 和任务效果仍需通过 Baseline、Shadow、Advisory 配对运行测量。
 
 Shadow 只保存上述记录，不改变主模型输入。Advisory 把通过校验和最低置信度阈值的简报作为带来源的消息加入当前 step；该消息与精确简报记录都进入 Session，因此重放可以重建模型输入。简报要求主模型结合原始证据独立判断，并允许接受、调整或拒绝建议。
 
@@ -89,6 +95,19 @@ Jev 超时、无效响应或低置信度不会注入内容，也不会替换或�
 
 `createDecisionGuidanceReport(session)` 聚合主模型 token、Jev token、总 token、Agent step、工具调用、重复工具调用、延迟、Advisory 采纳标签和任务结果。`renderDecisionGuidanceReportJson` 与 `renderDecisionGuidanceReportMarkdown` 只导出无内容指标，不复制消息、Jev 请求、答案、工具参数或凭证。任务成功和建议采纳必须由评估器通过 `recordDecisionGuidanceOutcome` 明确标注；普通 `turn/end: completed` 不等同于结果正确。
 
+### 采集真实纠正案例
+
+当主模型刚给出的回答有误时，在纠正消息的第一行写 `/jev-failure <错误标签>`，并把纠正说明和证据放在同一条消息的后续正文。例如：
+
+```text
+/jev-failure missed-evidence
+上一轮遗漏了错误日志中的 401；请根据该证据重新判断。
+```
+
+支持的标签是 `incorrect-conclusion`、`missed-evidence`、`wrong-direction`、`unnecessary-exploration`、`unsafe-action` 和 `incomplete`。启用 `failureCaptureEnabled` 后，插件会把上一条 Assistant 消息作为错误检查点，并在本地 Session 写入 `plugin:dsh-jev/failure-candidate`。该记录只包含检查点序号、消息 ID、标签和 turn/step；纠正正文由原始 DSH Session 保存，插件不会复制正文或触发 Jev 调用。同一 Assistant 检查点只计一次。
+
+配置页显示当前在线 Session 的自然失败候选数量和配对测试就绪状态。只有两个不同的 Assistant 检查点被标记后，才进入 Baseline 稳定复现和 Jev 配对测试；达到数量门槛不代表 Jev 已产生价值。
+
 版本化评估集覆盖简单任务、信息不足、多路径诊断、编码调试、工具失败、高风险操作、错误建议、Jev 超时、提示注入和敏感数据。运行可重复的受控验收：
 
 ```sh
@@ -96,6 +115,10 @@ pnpm eval
 ```
 
 评估器对相同任务运行 Baseline、Shadow 和 Advisory，输出成功率、关键决策正确率、每个成功任务平均总 token、无效工具调用、step、延迟、误触发率、Brier Score 和 ECE。合成数据只能验证评估管线，不能开放发布门禁；Advisory 必须使用完整、成对、可重复的真实运行数据满足所有条件后才能被批准发布。当前默认仍由用户明确选择模式。
+
+阶段六真实试点评估完成 18 次核心运行和 4 次定向复测。Baseline、Shadow 和 Advisory 的关键决策均为 6/6 正确，简单任务没有调用 Jev；Advisory 每个成功任务的平均总 token 比 Baseline 高约 13.0%，且没有减少 step 或重复工具调用，因此成本门禁未通过。完整结果见[阶段六报告](./docs/stage-6-real-pilot-report.md)。
+
+后续[高难任务复测](./docs/stage-6-hard-task-retest-report.md)完成 4 次 Baseline 筛选和 12 次配对运行，仍未发现 Baseline 错误；Advisory 平均总 token 增加约 4.1%，step 和工具调用没有改善。该结果没有改变阶段六门禁状态。
 
 ## 显式决策工具
 
@@ -117,7 +140,7 @@ pnpm typecheck
 pnpm build
 ```
 
-普通测试和 `pnpm eval` 使用模拟或合成 transport，不需要 `JEV_API_KEY`。当前代码包括决策协议、关键节点触发器、Shadow、Advisory、本地指标和三模式评估管线。阶段 16 的 Guided 模式仍未开发；只有真实评估证明成功率不下降、关键决策改善且成本或无效探索下降后才会启用更强干预。
+普通测试和 `pnpm eval` 使用模拟或合成 transport，不需要 `JEV_API_KEY`。当前代码包括决策协议、关键节点触发器、Shadow、Advisory、本地指标和三模式评估管线。阶段 16 的 Guided 模式仍未开发；当前真实试点评估没有通过成本与无效探索门禁，因此不会启用更强干预。
 
 ## 插件市场
 

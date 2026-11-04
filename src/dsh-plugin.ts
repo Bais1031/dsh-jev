@@ -23,6 +23,7 @@ import { createJevDecisionTool } from './dsh-tool.js'
 import { JevDecisionProvider } from './jev-provider.js'
 import type { JevConnectionTestResult, JevLatestSessionSummary } from './remote.js'
 import { summarizeDecisionGuidance } from './decision-guidance-summary.js'
+import { installFailureCapture } from './failure-capture.js'
 
 const DEFAULT_API_KEY_REF = 'JEV_API_KEY'
 const DEFAULT_ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
@@ -34,6 +35,11 @@ const DEFAULT_DECISION_MODE: DecisionGuidanceMode = 'off'
 const DEFAULT_DECISION_NODES: readonly DecisionNodeType[] = ['task-intake', 'tool-recovery', 'progress-check']
 const DEFAULT_DECISION_COOLDOWN_STEPS = 3
 const DEFAULT_DECISION_MAX_CALLS_PER_SESSION = 8
+const DEFAULT_DECISION_MAX_TOKENS_PER_SESSION = 8_000
+const DEFAULT_DECISION_LOW_CONFIDENCE_BACKOFF_THRESHOLD = 2
+const DEFAULT_DECISION_PROVIDER_FAILURE_BACKOFF_THRESHOLD = 2
+const DEFAULT_DECISION_DEADLINE_BACKOFF_THRESHOLD = 2
+const DEFAULT_DECISION_BACKOFF_ALLOWS_RECOVERY_NODES = true
 const DEFAULT_DECISION_PROGRESS_CHECK_STEP = 4
 const DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS = 200
 const DEFAULT_DECISION_MAX_INPUT_CHARACTERS = 6_000
@@ -42,6 +48,7 @@ const LEGACY_DEFAULT_DECISION_MAX_OUTPUT_TOKENS = 250
 const DEFAULT_DECISION_MINIMUM_CONFIDENCE = 0.7
 const DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES = false
 const DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS = 1_000
+const DEFAULT_FAILURE_CAPTURE_ENABLED = true
 
 /** Plain Loader input accepted before Schemastery creates live references. */
 export interface ConfigInput {
@@ -55,6 +62,11 @@ export interface ConfigInput {
   readonly decisionNodes?: DecisionNodeType[]
   readonly decisionCooldownSteps?: number
   readonly decisionMaxCallsPerSession?: number
+  readonly decisionMaxTokensPerSession?: number
+  readonly decisionLowConfidenceBackoffThreshold?: number
+  readonly decisionProviderFailureBackoffThreshold?: number
+  readonly decisionDeadlineBackoffThreshold?: number
+  readonly decisionBackoffAllowsRecoveryNodes?: boolean
   readonly decisionProgressCheckStep?: number
   readonly decisionMinimumTaskInputCharacters?: number
   readonly decisionMaxInputCharacters?: number
@@ -64,6 +76,7 @@ export interface ConfigInput {
   readonly decisionMinimumConfidence?: number
   readonly decisionIncludeToolResultSummaries?: boolean
   readonly decisionToolResultSummaryCharacters?: number
+  readonly failureCaptureEnabled?: boolean
 }
 
 /** DSH plugin configuration. Every deployment-varying transport choice is configurable. */
@@ -88,9 +101,19 @@ export interface Config {
   readonly decisionCooldownSteps?: Volatile<number>
   /** Maximum automatic Jev calls admitted for one live Agent Session. */
   readonly decisionMaxCallsPerSession?: Volatile<number>
+  /** Maximum recorded Jev input and output tokens admitted for one live Agent Session. */
+  readonly decisionMaxTokensPerSession?: Volatile<number>
+  /** Consecutive unaccepted briefs that pause early-node automatic calls. */
+  readonly decisionLowConfidenceBackoffThreshold?: Volatile<number>
+  /** Consecutive Provider failures that pause automatic calls. */
+  readonly decisionProviderFailureBackoffThreshold?: Volatile<number>
+  /** Consecutive automatic deadlines that pause automatic calls. */
+  readonly decisionDeadlineBackoffThreshold?: Volatile<number>
+  /** Whether evidence-backed recovery nodes may bypass Session backoff counters. */
+  readonly decisionBackoffAllowsRecoveryNodes?: Volatile<boolean>
   /** First step number eligible for a progress-check trigger. */
   readonly decisionProgressCheckStep?: Volatile<number>
-  /** Task text size that can trigger intake analysis without a keyword signal. */
+  /** Minimum direct-user characters required before an early analysis node may call Jev. */
   readonly decisionMinimumTaskInputCharacters?: Volatile<number>
   /** Maximum Unicode characters copied into one automatic decision request. */
   readonly decisionMaxInputCharacters?: Volatile<number>
@@ -104,6 +127,8 @@ export interface Config {
   readonly decisionIncludeToolResultSummaries?: Volatile<boolean>
   /** Maximum previous-step tool-result characters eligible for one automatic request. */
   readonly decisionToolResultSummaryCharacters?: Volatile<number>
+  /** Whether explicit `/jev-failure` user corrections are referenced in local Session records. */
+  readonly failureCaptureEnabled?: Volatile<boolean>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -131,6 +156,11 @@ export const Config: z<ConfigInput, Config> = z.object({
   ] as const)).min(1).default([...DEFAULT_DECISION_NODES]).volatile(),
   decisionCooldownSteps: z.natural().default(DEFAULT_DECISION_COOLDOWN_STEPS).volatile(),
   decisionMaxCallsPerSession: z.natural().min(1).default(DEFAULT_DECISION_MAX_CALLS_PER_SESSION).volatile(),
+  decisionMaxTokensPerSession: z.natural().min(1).default(DEFAULT_DECISION_MAX_TOKENS_PER_SESSION).volatile(),
+  decisionLowConfidenceBackoffThreshold: z.natural().min(1).default(DEFAULT_DECISION_LOW_CONFIDENCE_BACKOFF_THRESHOLD).volatile(),
+  decisionProviderFailureBackoffThreshold: z.natural().min(1).default(DEFAULT_DECISION_PROVIDER_FAILURE_BACKOFF_THRESHOLD).volatile(),
+  decisionDeadlineBackoffThreshold: z.natural().min(1).default(DEFAULT_DECISION_DEADLINE_BACKOFF_THRESHOLD).volatile(),
+  decisionBackoffAllowsRecoveryNodes: z.boolean().default(DEFAULT_DECISION_BACKOFF_ALLOWS_RECOVERY_NODES).volatile(),
   decisionProgressCheckStep: z.natural().min(2).default(DEFAULT_DECISION_PROGRESS_CHECK_STEP).volatile(),
   decisionMinimumTaskInputCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS).volatile(),
   decisionMaxInputCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_MAX_INPUT_CHARACTERS).volatile(),
@@ -139,6 +169,7 @@ export const Config: z<ConfigInput, Config> = z.object({
   decisionMinimumConfidence: z.number().min(0).max(1).default(DEFAULT_DECISION_MINIMUM_CONFIDENCE).volatile(),
   decisionIncludeToolResultSummaries: z.boolean().default(DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES).volatile(),
   decisionToolResultSummaryCharacters: z.natural().min(1).max(100_000).default(DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS).volatile(),
+  failureCaptureEnabled: z.boolean().default(DEFAULT_FAILURE_CAPTURE_ENABLED).volatile(),
 })
 
 /** Cordis-owned decision capability with one default Jev provider and the `jev_decide` tool. */
@@ -189,6 +220,11 @@ export class DshDecisionService extends TypertRemoteService {
       enabledNodes: () => config.decisionNodes?.get() ?? DEFAULT_DECISION_NODES,
       cooldownSteps: () => config.decisionCooldownSteps?.get() ?? DEFAULT_DECISION_COOLDOWN_STEPS,
       maximumCallsPerSession: () => config.decisionMaxCallsPerSession?.get() ?? DEFAULT_DECISION_MAX_CALLS_PER_SESSION,
+      maximumTokensPerSession: () => config.decisionMaxTokensPerSession?.get() ?? DEFAULT_DECISION_MAX_TOKENS_PER_SESSION,
+      lowConfidenceBackoffThreshold: () => config.decisionLowConfidenceBackoffThreshold?.get() ?? DEFAULT_DECISION_LOW_CONFIDENCE_BACKOFF_THRESHOLD,
+      providerFailureBackoffThreshold: () => config.decisionProviderFailureBackoffThreshold?.get() ?? DEFAULT_DECISION_PROVIDER_FAILURE_BACKOFF_THRESHOLD,
+      deadlineBackoffThreshold: () => config.decisionDeadlineBackoffThreshold?.get() ?? DEFAULT_DECISION_DEADLINE_BACKOFF_THRESHOLD,
+      backoffAllowsRecoveryNodes: () => config.decisionBackoffAllowsRecoveryNodes?.get() ?? DEFAULT_DECISION_BACKOFF_ALLOWS_RECOVERY_NODES,
       progressCheckStep: () => config.decisionProgressCheckStep?.get() ?? DEFAULT_DECISION_PROGRESS_CHECK_STEP,
       minimumTaskInputCharacters: () => config.decisionMinimumTaskInputCharacters?.get() ?? DEFAULT_DECISION_MINIMUM_TASK_INPUT_CHARACTERS,
       maximumInputCharacters: () => config.decisionMaxInputCharacters?.get() ?? DEFAULT_DECISION_MAX_INPUT_CHARACTERS,
@@ -196,6 +232,9 @@ export class DshDecisionService extends TypertRemoteService {
       minimumConfidence: () => config.decisionMinimumConfidence?.get() ?? DEFAULT_DECISION_MINIMUM_CONFIDENCE,
       includeToolResultSummaries: () => config.decisionIncludeToolResultSummaries?.get() ?? DEFAULT_DECISION_INCLUDE_TOOL_RESULT_SUMMARIES,
       toolResultSummaryCharacters: () => config.decisionToolResultSummaryCharacters?.get() ?? DEFAULT_DECISION_TOOL_RESULT_SUMMARY_CHARACTERS,
+    })
+    installFailureCapture(ctx, {
+      enabled: () => config.failureCaptureEnabled?.get() ?? DEFAULT_FAILURE_CAPTURE_ENABLED,
     })
     ctx.on('agent/pre-step', ({ agent }, next) => {
       this.latestSession = agent.session
@@ -251,6 +290,10 @@ export class DshDecisionService extends TypertRemoteService {
       totalLatencyMs: summary.totalLatencyMs,
       latestCall: summary.latestCall,
       latestFailure: summary.latestFailure,
+      skips: summary.skips,
+      latestSkip: summary.latestSkip,
+      failureCandidates: summary.failureCandidates,
+      failurePairReady: summary.failurePairReady,
     })
   }
 

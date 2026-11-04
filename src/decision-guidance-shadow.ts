@@ -17,6 +17,8 @@ import {
 import {
   DecisionTriggerGate,
   type DecisionTrigger,
+  type DecisionTriggerObservation,
+  type DecisionTriggerSkipReason,
   type DecisionTriggerOptions,
 } from './decision-guidance-trigger.js'
 import type { DecisionAnswer, DecisionRequest, DecisionResult } from './decision-types.js'
@@ -108,6 +110,18 @@ export interface DecisionGuidanceAdvisoryRecord {
   readonly content: string
 }
 
+/** Content-free reason why deterministic policy did not dispatch an automatic Jev call. */
+export interface DecisionGuidanceSkipRecord {
+  readonly strategyVersion: typeof DECISION_GUIDANCE_STRATEGY_VERSION
+  readonly mode: Exclude<DecisionGuidanceMode, 'off'>
+  readonly turn: number
+  readonly step: number
+  readonly nodeType: DecisionNodeType
+  readonly reason: DecisionTriggerSkipReason
+  readonly usedTokens: number
+  readonly tokenBudget: number
+}
+
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
     /** Exact bounded input for one optional dsh-jev decision analysis; API credentials are excluded. */
@@ -116,6 +130,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:dsh-jev/decision-result': DecisionGuidanceResultRecord
     /** Exact accepted Advisory text added to the current model request. */
     'plugin:dsh-jev/decision-advisory': DecisionGuidanceAdvisoryRecord
+    /** Automatic decision candidate skipped before any Jev request. */
+    'plugin:dsh-jev/decision-skip': DecisionGuidanceSkipRecord
   }
 }
 
@@ -151,19 +167,34 @@ export function installDecisionGuidanceShadow(
     const decision = await next()
     const mode = options.mode()
     if (mode === 'off' || decision.kind === 'reject' || signal.aborted) return decision
-    const trigger = triggers.consider(agent, turn, step, decision.messages, options)
-    if (trigger === undefined) return decision
-    const evaluated = await evaluateDecision(
+    const selected = triggers.consider(agent, turn, step, decision.messages, options)
+    if (selected.kind === 'none') return decision
+    if (selected.kind === 'skip') {
+      appendPluginRecord(agent.session, 'plugin:dsh-jev/decision-skip', {
+        strategyVersion: DECISION_GUIDANCE_STRATEGY_VERSION,
+        mode,
+        turn: selected.turn,
+        step: selected.step,
+        nodeType: selected.nodeType,
+        reason: selected.reason,
+        usedTokens: triggers.usedTokens(agent),
+        tokenBudget: options.maximumTokensPerSession(),
+      })
+      return decision
+    }
+    const trigger = selected.trigger
+    const outcome = await evaluateDecision(
       agent.session,
       mode,
       trigger,
-      decision.messages,
       decisions,
       options,
       signal,
     )
+    triggers.observe(agent, outcome.observation)
     signal.throwIfAborted()
-    if (mode === 'shadow' || evaluated === undefined || !evaluated.brief.accepted) return decision
+    if (mode === 'shadow' || outcome.evaluation === undefined || !outcome.evaluation.brief.accepted) return decision
+    const evaluated = outcome.evaluation
     const content = renderDecisionAdvisory(evaluated.brief)
     appendPluginRecord(agent.session, 'plugin:dsh-jev/decision-advisory', {
       requestSeq: evaluated.requestSeq,
@@ -203,16 +234,20 @@ interface SuccessfulEvaluation {
   readonly brief: JevDecisionBrief
 }
 
+interface EvaluationOutcome {
+  readonly evaluation?: SuccessfulEvaluation
+  readonly observation: DecisionTriggerObservation
+}
+
 async function evaluateDecision(
   session: Session,
   mode: Exclude<DecisionGuidanceMode, 'off'>,
   trigger: DecisionTrigger,
-  messages: readonly UserMessage[],
   decisions: DecisionGuidanceService,
   options: DecisionGuidanceShadowOptions,
   signal: AbortSignal,
-): Promise<SuccessfulEvaluation | undefined> {
-  const input = boundedInput(trigger, messages.length, options.maximumInputCharacters())
+): Promise<EvaluationOutcome> {
+  const input = boundedInput(trigger, trigger.signals.admittedMessageCount, options.maximumInputCharacters())
   const request = createDecisionGuidanceRequest(trigger.nodeType, input.state, options.model())
   const requestSeq = appendPluginRecord(session, 'plugin:dsh-jev/decision-request', {
     strategyVersion: DECISION_GUIDANCE_STRATEGY_VERSION,
@@ -242,7 +277,14 @@ async function evaluateDecision(
         'plugin:dsh-jev/decision-result',
         failureRecord(requestSeq, error, 'projection', result),
       )
-      return undefined
+      return {
+        observation: {
+          kind: 'failure',
+          stage: 'projection',
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+        },
+      }
     }
     const resultSeq = appendPluginRecord(session, 'plugin:dsh-jev/decision-result', {
       requestSeq,
@@ -255,14 +297,22 @@ async function evaluateDecision(
       minimumConfidence,
       answers: result.answers,
     })
-    return { requestSeq, resultSeq, brief }
+    return {
+      evaluation: { requestSeq, resultSeq, brief },
+      observation: {
+        kind: 'success',
+        accepted: brief.accepted,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+      },
+    }
   } catch (error: unknown) {
     appendPluginRecord(session, 'plugin:dsh-jev/decision-result', failureRecord(
       requestSeq,
       error,
       failureStage(error),
     ))
-    return undefined
+    return { observation: { kind: 'failure', stage: failureStage(error) } }
   }
 }
 
@@ -344,20 +394,22 @@ async function decideBeforeDeadline(
  */
 export function renderDecisionAdvisory(brief: JevDecisionBrief): string {
   const directions = brief.candidateDirections
-    .map(direction => `${direction.focus} (${formatProbability(direction.probability)})`)
+    ?.map(direction => `${direction.focus} (${formatProbability(direction.probability)})`)
     .join(', ')
   return [
-    '<jev-decision-advisory version="2">',
+    '<jev-decision-advisory version="3">',
     'Non-authoritative analysis guidance. Independently verify it against the user request and available evidence.',
     `Node: ${brief.nodeType}`,
-    `Information sufficient: ${String(brief.informationSufficient)} (${formatProbability(brief.informationSufficientProbability)})`,
-    `Recommended next analytical action: ${brief.recommendedAction}`,
-    `Candidate directions: ${directions}`,
-    `Primary focus: ${brief.focus}`,
+    ...brief.informationSufficient === undefined || brief.informationSufficientProbability === undefined
+      ? []
+      : [`Information sufficient: ${String(brief.informationSufficient)} (${formatProbability(brief.informationSufficientProbability)})`],
+    ...brief.recommendedAction === undefined ? [] : [`Recommended next analytical action: ${brief.recommendedAction}`],
+    ...directions === undefined ? [] : [`Candidate directions: ${directions}`],
+    ...brief.focus === undefined ? [] : [`Primary focus: ${brief.focus}`],
     ...brief.avoid === undefined ? [] : [`Avoid: ${brief.avoid}`],
-    ...brief.riskLevel === undefined
-      ? [`Ambiguity: ${brief.ambiguity}; confidence: ${formatProbability(brief.confidence)}`]
-      : [`Risk: ${brief.riskLevel}; ambiguity: ${brief.ambiguity}; confidence: ${formatProbability(brief.confidence)}`],
+    ...brief.riskLevel === undefined ? [] : [`Risk: ${brief.riskLevel}`],
+    ...brief.ambiguity === undefined ? [] : [`Ambiguity: ${brief.ambiguity}`],
+    `Strongest retained signal confidence: ${formatProbability(brief.confidence)}`,
     'This guidance is not evidence and grants no permission to use tools or perform external actions. You may accept, adapt, or reject it.',
     '</jev-decision-advisory>',
   ].join('\n')

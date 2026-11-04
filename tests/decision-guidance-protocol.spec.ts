@@ -14,33 +14,50 @@ describe('decision guidance protocol', () => {
       'informationSufficient',
       'recommendedAction',
       'focus',
-      'ambiguity',
     ])
-    expect(DECISION_GUIDANCE_QUESTION_VERSION).toBe('decision-brief-v2')
+    expect(DECISION_GUIDANCE_QUESTION_VERSION).toBe('decision-brief-v3')
   })
 
   it('adds only the questions needed by later analysis nodes', () => {
     expect(Object.keys(createDecisionGuidanceRequest('progress-check', {}, 'jev-test').questions)).toEqual([
-      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'avoid',
+      'recommendedAction', 'focus', 'avoid',
     ])
     expect(Object.keys(createDecisionGuidanceRequest('tool-recovery', {}, 'jev-test').questions)).toEqual([
-      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'avoid', 'risk',
+      'recommendedAction', 'focus', 'avoid', 'risk',
     ])
     expect(Object.keys(createDecisionGuidanceRequest('pre-conclusion', {}, 'jev-test').questions)).toEqual([
-      'informationSufficient', 'recommendedAction', 'focus', 'ambiguity', 'risk',
+      'informationSufficient', 'recommendedAction', 'risk',
     ])
+  })
+
+  it('keeps every v3 node request smaller than its v2 serialized baseline', () => {
+    const v2Bytes = {
+      'task-intake': 1_819,
+      'missing-information': 1_819,
+      'direction-selection': 1_819,
+      'tool-recovery': 2_730,
+      'progress-check': 2_414,
+      'pre-conclusion': 2_135,
+    } as const
+    for (const [nodeType, baseline] of Object.entries(v2Bytes)) {
+      const request = createDecisionGuidanceRequest(
+        nodeType as keyof typeof v2Bytes,
+        { content: 'x' },
+        'jev-test',
+      )
+      expect(new TextEncoder().encode(JSON.stringify(request)).byteLength).toBeLessThan(baseline)
+    }
   })
 
   it('projects probabilities into a short ranked brief', () => {
     const brief = createDecisionBrief('direction-selection', result(), 0.7)
     expect(brief).toMatchObject({
-      version: 2,
+      version: 3,
       nodeType: 'direction-selection',
       informationSufficient: true,
       recommendedAction: 'inspect-context',
       focus: 'verify-assumptions',
-      ambiguity: 'low',
-      confidence: 0.8,
+      confidence: 0.9,
       accepted: true,
       reasons: [],
     })
@@ -53,13 +70,33 @@ describe('decision guidance protocol', () => {
 
   it('retains a valid low-confidence brief without accepting it', () => {
     const low = result({
+      informationSufficient: { type: 'boolean', value: true, probability: 0.6, confidence: 0.6 },
       recommendedAction: choice('inspect-context', ACTION_PROBABILITIES, 0.6),
+      focus: choice('verify-assumptions', FOCUS_PROBABILITIES, 0.6),
     })
     expect(createDecisionBrief('task-intake', low, 0.7)).toMatchObject({
       confidence: 0.6,
       accepted: false,
       reasons: ['confidence-below-threshold'],
     })
+  })
+
+  it('retains high-confidence fields without exposing uncertain fields', () => {
+    const partial = createDecisionBrief('missing-information', result({
+      informationSufficient: { type: 'boolean', value: false, probability: 0.15, confidence: 0.85 },
+      recommendedAction: choice('ask-user', ACTION_PROBABILITIES, 0.36),
+      ambiguity: choice('high', { low: 0.12, medium: 0.05, high: 0.83 }, 0.74),
+    }), 0.7)
+
+    expect(partial).toMatchObject({
+      accepted: true,
+      confidence: 0.85,
+      informationSufficient: false,
+      informationSufficientProbability: 0.15,
+      ambiguity: 'high',
+    })
+    expect(partial).not.toHaveProperty('recommendedAction')
+    expect(partial).not.toHaveProperty('focus')
   })
 
   it('accepts a valid result independently of provider-reported output usage', () => {

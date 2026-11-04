@@ -41,6 +41,12 @@ The following profile configuration enables Advisory and limits critical nodes, 
       - progress-check
     decisionCooldownSteps: 3
     decisionMaxCallsPerSession: 8
+    decisionMaxTokensPerSession: 8000
+    failureCaptureEnabled: true
+    decisionLowConfidenceBackoffThreshold: 2
+    decisionProviderFailureBackoffThreshold: 2
+    decisionDeadlineBackoffThreshold: 2
+    decisionBackoffAllowsRecoveryNodes: true
     decisionProgressCheckStep: 4
     decisionMinimumTaskInputCharacters: 200
     decisionMaxInputCharacters: 6000
@@ -77,7 +83,7 @@ When a critical node is selected, the plugin first writes an ignorable `plugin:d
 
 Library consumers can call `summarizeDecisionGuidance(session)` to aggregate calls, Jev responses, valid briefs, actual injections, tokens, latency, and node distribution locally. The summary omits request content and answers.
 
-`decision-brief-v2` sends the smallest question set for each critical node. Every node asks about information sufficiency, recommended action, focus, and ambiguity; `progress-check` adds behavior to avoid, `pre-conclusion` adds risk, and `tool-recovery` adds both. `task-intake` therefore drops from seven questions to four. Briefs use fixed vocabularies, retain at most three candidate directions, and do not ask Jev for hidden reasoning or unrestricted prose. Tests establish the smaller question count; paired Baseline, Shadow, and Advisory runs must still measure real tokens and task outcomes.
+`decision-brief-v3` sends three or four questions selected for each critical node and uses shorter question descriptions. An early node calls Jev only when direct-user text reaches the configured character threshold and carries a complex-analysis, multiple-candidate, multiple-constraint, or high-impact signal; a simple one-step choice is skipped before dispatch. A brief retains only fixed protocol fields that meet their field confidence threshold, so a strong information-sufficiency or ambiguity signal is not discarded because another field is uncertain. The protocol retains at most three candidate directions and does not ask Jev for hidden reasoning or unrestricted prose. Tests establish the smaller serialized request; paired Baseline, Shadow, and Advisory runs must still measure real tokens and task outcomes.
 
 Shadow only stores these records and does not change main-model input. Advisory adds a source-attributed brief that passes validation and the minimum confidence threshold to the current step. Both the message and exact brief record enter the Session, so replay can reconstruct the model input. The brief tells the main model to assess the original evidence independently and permits it to accept, adapt, or reject the advice.
 
@@ -89,6 +95,19 @@ Set `decisionMode` to `off` to prevent automatic Jev calls and decision records.
 
 `createDecisionGuidanceReport(session)` aggregates main-model tokens, Jev tokens, total tokens, Agent steps, tool calls, repeated tool calls, latency, Advisory adoption labels, and task outcomes. `renderDecisionGuidanceReportJson` and `renderDecisionGuidanceReportMarkdown` export content-free metrics only; they do not copy messages, Jev requests, answers, tool arguments, or credentials. An evaluator must label task success and adoption explicitly with `recordDecisionGuidanceOutcome`; a normal `turn/end: completed` does not establish correctness.
 
+### Capture real correction cases
+
+When the latest main-model answer is wrong, start the correction message with `/jev-failure <error-label>` and put the correction and its evidence in the remaining lines of the same message. For example:
+
+```text
+/jev-failure missed-evidence
+The previous answer missed the 401 in the error log. Reassess using that evidence.
+```
+
+Supported labels are `incorrect-conclusion`, `missed-evidence`, `wrong-direction`, `unnecessary-exploration`, `unsafe-action`, and `incomplete`. When `failureCaptureEnabled` is enabled, the plugin treats the preceding Assistant message as the error checkpoint and appends a local `plugin:dsh-jev/failure-candidate` record. The record contains only checkpoint sequence numbers, message IDs, the label, and turn/step values. The original DSH Session owns the correction body; the plugin does not copy it or call Jev. One Assistant checkpoint counts once.
+
+The configuration page shows the natural-failure candidate count and paired-test readiness for the current live Session. Baseline stability reproduction and Jev paired evaluation may start only after two distinct Assistant checkpoints are marked. Reaching the count does not establish Jev value.
+
 The versioned evaluation dataset covers simple tasks, missing information, multi-path diagnosis, coding debug, tool failure, high-risk operations, incorrect advice, Jev timeout, prompt injection, and sensitive data. Run its repeatable controlled acceptance with:
 
 ```sh
@@ -96,6 +115,10 @@ pnpm eval
 ```
 
 The evaluator runs Baseline, Shadow, and Advisory for the same tasks and reports success rate, critical-decision accuracy, average total tokens per successful task, unproductive tool calls, steps, latency, mis-trigger rate, Brier Score, and ECE. Synthetic evidence validates the evaluation pipeline but cannot open the release gate; Advisory needs complete, paired, repeatable real runs that satisfy every condition. Users still select the active mode explicitly.
+
+The stage 6 real pilot completed 18 core runs and 4 targeted repeats. Baseline, Shadow, and Advisory each made 6/6 correct critical decisions, and the simple task made no Jev call. Advisory used about 13.0% more total tokens per successful task than Baseline without reducing steps or repeated tool calls, so it did not pass the cost gate. See the [stage 6 report](./docs/stage-6-real-pilot-report.md) for the complete results.
+
+The subsequent [hard-task retest](./docs/stage-6-hard-task-retest-report.md) completed 4 Baseline screening runs and 12 paired runs. It still found no Baseline error; Advisory used about 4.1% more average total tokens without reducing steps or tool calls. This result did not change the stage 6 gate status.
 
 ## Explicit decision tool
 
@@ -117,7 +140,7 @@ pnpm typecheck
 pnpm build
 ```
 
-Normal tests and `pnpm eval` use mocked or synthetic transports and do not require `JEV_API_KEY`. The current code contains the decision protocol, critical-node trigger, Shadow, Advisory, local metrics, and the three-mode evaluation pipeline. Stage 16 Guided mode is not implemented; stronger intervention remains disabled until real evaluation shows no success regression, improved critical decisions, and lower cost or unproductive exploration.
+Normal tests and `pnpm eval` use mocked or synthetic transports and do not require `JEV_API_KEY`. The current code contains the decision protocol, critical-node trigger, Shadow, Advisory, local metrics, and the three-mode evaluation pipeline. Stage 16 Guided mode is not implemented; the current real pilot did not pass the cost and unproductive-exploration gate, so stronger intervention remains disabled.
 
 ## Plugin market
 

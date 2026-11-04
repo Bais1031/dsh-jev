@@ -154,7 +154,7 @@ function reportFixture(
 function request(mode: 'shadow' | 'advisory'): DecisionGuidanceRequestRecord {
   return {
     strategyVersion: 'jev-decision-guidance-v1',
-    questionVersion: 'decision-brief-v2',
+    questionVersion: 'decision-brief-v3',
     mode,
     turn: 1,
     step: 1,
@@ -185,7 +185,7 @@ function request(mode: 'shadow' | 'advisory'): DecisionGuidanceRequestRecord {
 
 function brief() {
   return {
-    version: 2 as const,
+    version: 3 as const,
     nodeType: 'task-intake' as const,
     taskType: 'analysis' as const,
     informationSufficient: true,
